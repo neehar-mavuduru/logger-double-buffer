@@ -243,7 +243,8 @@ docker logs $CONTAINER_NAME > "$RESULTS_DIR/server_${TIMESTAMP}.log" 2>&1
 echo -e "${BLUE}Analyzing flush errors...${NC}"
 grep "FLUSH_ERROR" "$RESULTS_DIR/server_${TIMESTAMP}.log" > "$RESULTS_DIR/flush_errors_${TIMESTAMP}.log" 2>/dev/null || echo "No flush errors found" > "$RESULTS_DIR/flush_errors_${TIMESTAMP}.log"
 FLUSH_ERROR_COUNT=$(grep -c "FLUSH_ERROR" "$RESULTS_DIR/server_${TIMESTAMP}.log" 2>/dev/null || echo "0")
-if [ "$FLUSH_ERROR_COUNT" -gt 0 ]; then
+FLUSH_ERROR_COUNT=${FLUSH_ERROR_COUNT:-0}
+if [ "$FLUSH_ERROR_COUNT" -gt 0 ] 2>/dev/null; then
     echo -e "${YELLOW}⚠ Found $FLUSH_ERROR_COUNT flush errors - see flush_errors_${TIMESTAMP}.log${NC}"
 fi
 

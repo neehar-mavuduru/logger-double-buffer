@@ -351,8 +351,20 @@ func (l *Logger) flushSet(set *BufferSet) {
 		n, err := writevAligned(l.file, shardBuffers)
 		writeDuration := time.Since(writeStart)
 
-		// Track write duratio
-		l.stats.TotalWriteDuration.Add(writeDuration.Nanoseconds())
+		// Track write duration
+		writeDurationNs := writeDuration.Nanoseconds()
+		l.stats.TotalWriteDuration.Add(writeDurationNs)
+
+		// Update max write duration atomically
+		for {
+			currentMax := l.stats.MaxWriteDuration.Load()
+			if writeDurationNs <= currentMax {
+				break
+			}
+			if l.stats.MaxWriteDuration.CompareAndSwap(currentMax, writeDurationNs) {
+				break
+			}
+		}
 
 		if err != nil {
 			l.stats.FlushErrors.Add(1)
@@ -382,7 +394,19 @@ func (l *Logger) flushSet(set *BufferSet) {
 
 	// Track flush duration
 	flushDuration := time.Since(flushStart)
-	l.stats.TotalFlushDuration.Add(flushDuration.Nanoseconds())
+	flushDurationNs := flushDuration.Nanoseconds()
+	l.stats.TotalFlushDuration.Add(flushDurationNs)
+
+	// Update max flush duration atomically
+	for {
+		currentMax := l.stats.MaxFlushDuration.Load()
+		if flushDurationNs <= currentMax {
+			break
+		}
+		if l.stats.MaxFlushDuration.CompareAndSwap(currentMax, flushDurationNs) {
+			break
+		}
+	}
 }
 
 // drainFlushChannel flushes all pending buffer sets in the channel
