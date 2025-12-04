@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package randomnumbers;
+
+option go_package = "github.com/neeharmavuduru/logger-double-buffer/proto";
+
+// RandomNumberService provides endpoints for generating random numbers
+service RandomNumberService {
+  // GetRandomNumbers returns 200 random numbers separated by ':'
+  rpc GetRandomNumbers(GetRandomNumbersRequest) returns (GetRandomNumbersResponse);
+}
+
+// GetRandomNumbersRequest contains optional event name for log routing
+message GetRandomNumbersRequest {
+  string event_name = 1; // Optional event name for event-based log separation
+}
+
+// GetRandomNumbersResponse contains the random numbers string
+message GetRandomNumbersResponse {
+  string numbers = 1;
+}
+

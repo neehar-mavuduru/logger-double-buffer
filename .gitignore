@@ -1,0 +1,126 @@
+# Binaries and executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+*.test
+*.out
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs and results
+*.log
+logs/
+results/
+profiling_results/
+*.csv
+
+# Profiling data
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+cpu_optimized.prof
+mem_optimized.prof
+
+# Docker
+.dockerignore
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Build artifacts
+server/server
+client/client
+loadtest/loadtest
+
+# Environment files
+.env
+.env.local
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Test data (keep structure but ignore large files if any)
+# test_data/ is kept for small JSON files
+
+# Documentation that's not needed in repo (user requested to ignore README)
+# But we'll keep essential docs, exclude analysis docs
+*_ANALYSIS.md
+*_RESULTS.md
+*_FINDINGS.md
+*_COMPARISON.md
+*_SUMMARY.md
+*_GUIDE.md
+*_REPORT.md
+*_NOTES.md
+CODE_*.md
+DATA_*.md
+FLUSH_*.md
+LOAD_*.md
+MMAP_*.md
+UNDERSTANDING_*.md
+ZERO_*.md
+IMPLEMENTATION_*.md
+PROFILING_*.md
+PRODUCTION_*.md
+QUICK_*.md
+READY_*.md
+REMAINING_*.md
+RESOURCE_*.md
+SHARD_*.md
+SOAK_*.md
+SUSTAINED_*.md
+THREAD_*.md
+TRUE_*.md
+WRITEV_*.md
+BUFFER_*.md
+BYTE_*.md
+CLIFF_*.md
+COMPREHENSIVE_*.md
+CORRECTED_*.md
+CPU_*.md
+DISK_*.md
+DOCKER_*.md
+DROP_*.md
+EXECUTIVE_*.md
+FINAL_*.md
+GC_*.md
+LATENCY_*.md
+LOGBYTES_*.md
+MONITOR_*.md
+OPTIMAL_*.md
+OPTIMIZED_*.md
+PROFILING_*.md
+QUICK_*.md
+README.md
+CHANGES_TO_PUSH.md
+
+# Keep only essential files
+!asynclogger/README.md
+

@@ -1,0 +1,57 @@
+{
+  "scenarios": [
+    {
+      "name": "baseline_1000rps",
+      "rps": 1000,
+      "duration": "2m",
+      "connections": 50,
+      "concurrency": 100,
+      "buffer_size_mb": 256,
+      "num_shards": 8,
+      "flush_interval": "5s"
+    },
+    {
+      "name": "high_buffer_1000rps",
+      "rps": 1000,
+      "duration": "2m",
+      "connections": 50,
+      "concurrency": 100,
+      "buffer_size_mb": 512,
+      "num_shards": 8,
+      "flush_interval": "5s"
+    },
+    {
+      "name": "more_shards_1000rps",
+      "rps": 1000,
+      "duration": "2m",
+      "connections": 50,
+      "concurrency": 100,
+      "buffer_size_mb": 256,
+      "num_shards": 16,
+      "flush_interval": "5s"
+    },
+    {
+      "name": "peak_load_1500rps",
+      "rps": 1500,
+      "duration": "2m",
+      "connections": 75,
+      "concurrency": 150,
+      "buffer_size_mb": 512,
+      "num_shards": 16,
+      "flush_interval": "5s"
+    },
+    {
+      "name": "burst_pattern",
+      "rps": 500,
+      "duration": "5m",
+      "connections": 50,
+      "concurrency": 100,
+      "buffer_size_mb": 256,
+      "num_shards": 8,
+      "flush_interval": "5s",
+      "burst": true,
+      "burst_pattern": "500-1000-500-1500-1000"
+    }
+  ]
+}
+

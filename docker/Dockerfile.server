@@ -1,0 +1,41 @@
+FROM golang:1.24.1-alpine AS builder
+
+RUN apk add --no-cache git
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build server
+RUN go build -o /app/server ./server
+
+FROM alpine:latest
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+
+# Copy binary
+COPY --from=builder /app/server .
+
+# Create logs directory
+RUN mkdir -p /app/logs
+
+# Expose gRPC port and pprof port
+EXPOSE 8585
+EXPOSE 6060
+
+# Default configuration (can be overridden by environment variables)
+ENV BUFFER_SIZE=268435456
+ENV NUM_SHARDS=8
+ENV FLUSH_INTERVAL=5s
+ENV LOG_FILE=/app/logs/server.log
+
+# Run server
+CMD ["sh", "-c", "/app/server -log-buffer-size=${BUFFER_SIZE} -log-num-shards=${NUM_SHARDS} -log-flush-interval=${FLUSH_INTERVAL} -log-file=${LOG_FILE}"]
+

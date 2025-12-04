@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  profiler:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.profiling
+    container_name: logger-profiler
+    cpus: '4'
+    mem_limit: 4g
+    mem_reservation: 2g
+    volumes:
+      - ../profiling_results:/app/profiling_results
+      - ../scripts:/app/scripts
+    working_dir: /app
+    command: /app/scripts/run_profiling_docker.sh
+

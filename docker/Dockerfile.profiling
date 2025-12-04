@@ -1,0 +1,24 @@
+FROM golang:1.24.1-alpine
+
+# Install build dependencies
+RUN apk add --no-cache bash git
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod files first for better caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the profiling test binary
+RUN go test -c -o /app/profiling_test ./logger -run=^$ -bench=.
+
+# Create output directory
+RUN mkdir -p /app/profiling_results
+
+# Set entrypoint to run profiling tests
+ENTRYPOINT ["/bin/bash"]
+

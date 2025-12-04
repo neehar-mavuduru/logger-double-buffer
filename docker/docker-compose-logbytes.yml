@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  logbytes-profiler:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.profiling
+    container_name: logbytes-profiler
+    cpus: '4'
+    mem_limit: 4g
+    mem_reservation: 2g
+    volumes:
+      - ../results:/app/results
+      - ../scripts:/app/scripts
+      - ../asynclogger:/app/asynclogger
+      - ../go.mod:/app/go.mod
+      - ../go.sum:/app/go.sum
+      - ..:/app
+    working_dir: /app
+    command: ["/app/scripts/collect_logbytes_metrics.sh"]
+    environment:
+      - MONITOR_RESOURCES=true
+
