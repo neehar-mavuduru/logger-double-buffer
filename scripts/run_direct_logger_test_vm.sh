@@ -1,0 +1,258 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}    Direct Logger Test - VM Execution                      ${NC}"
+echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# Configuration
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RESULTS_DIR="results/direct_logger_test"
+LOG_DIR="logs"
+DURATION="10m"
+THREADS=100
+LOG_SIZE_KB=300
+TARGET_RPS=1000
+BUFFER_MB=64
+SHARDS=8
+FLUSH_INTERVAL="10s"
+USE_EVENTS=false
+EVENT_NAME="test"
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --duration)
+            DURATION="$2"
+            shift 2
+            ;;
+        --threads)
+            THREADS="$2"
+            shift 2
+            ;;
+        --rps)
+            TARGET_RPS="$2"
+            shift 2
+            ;;
+        --buffer-mb)
+            BUFFER_MB="$2"
+            shift 2
+            ;;
+        --shards)
+            SHARDS="$2"
+            shift 2
+            ;;
+        --use-events)
+            USE_EVENTS=true
+            shift
+            ;;
+        --event)
+            EVENT_NAME="$2"
+            shift 2
+            ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --duration DURATION     Test duration (default: 10m)"
+            echo "  --threads THREADS        Number of threads (default: 100)"
+            echo "  --rps RPS                Target RPS (default: 1000)"
+            echo "  --buffer-mb MB           Buffer size in MB (default: 64)"
+            echo "  --shards SHARDS         Number of shards (default: 8)"
+            echo "  --use-events            Use event-based logging"
+            echo "  --event NAME            Event name (default: test)"
+            echo "  --help                  Show this help"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Create directories
+mkdir -p "$RESULTS_DIR"
+mkdir -p "$LOG_DIR"
+
+# Cleanup function
+cleanup() {
+    echo ""
+    echo -e "${YELLOW}Cleaning up...${NC}"
+    
+    # Kill test process if running
+    if [ -n "${TEST_PID:-}" ]; then
+        kill "$TEST_PID" 2>/dev/null || true
+        wait "$TEST_PID" 2>/dev/null || true
+    fi
+    
+    echo -e "${GREEN}✓ Cleanup complete${NC}"
+}
+
+trap cleanup EXIT INT TERM
+
+# Check if port is in use (not needed for direct test, but keeping for consistency)
+check_port() {
+    if lsof -Pi :8585 -sTCP:LISTEN -t >/dev/null 2>&1; then
+        echo -e "${YELLOW}Warning: Port 8585 is in use${NC}"
+    fi
+}
+
+# Cleanup old logs
+cleanup_old_logs() {
+    echo -e "${BLUE}Cleaning up old test logs...${NC}"
+    rm -rf "$LOG_DIR"/*.log 2>/dev/null || true
+    echo -e "${GREEN}✓ Old logs cleaned${NC}"
+}
+
+# Build test program
+echo -e "${BLUE}Building test program...${NC}"
+if ! go build -o "$RESULTS_DIR/direct_logger_test" ./cmd/direct_logger_test; then
+    echo -e "${RED}✗ Failed to build test program${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✓ Test program built${NC}"
+echo ""
+
+# Cleanup old logs
+cleanup_old_logs
+
+# Start resource monitoring
+echo -e "${BLUE}Starting resource monitoring...${NC}"
+RESOURCE_FILE="$RESULTS_DIR/resource_timeline_${TIMESTAMP}.csv"
+{
+    echo "timestamp,cpu_percent,mem_mb,mem_percent,disk_read_mb,disk_write_mb"
+    while true; do
+        TIMESTAMP_NOW=$(date +%s)
+        
+        # Get CPU usage (average across all cores)
+        CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
+        
+        # Get memory usage
+        MEM_TOTAL=$(free -m | awk '/^Mem:/ {print $2}')
+        MEM_USED=$(free -m | awk '/^Mem:/ {print $3}')
+        MEM_PCT=$(awk "BEGIN {printf \"%.2f\", ($MEM_USED/$MEM_TOTAL)*100}")
+        
+        # Get disk I/O (if iostat available, else 0)
+        if command -v iostat >/dev/null 2>&1; then
+            DISK_STATS=$(iostat -x 1 1 | awk '/^[a-z]/ {if (NR>1) print $6,$7}' | tail -1)
+            DISK_READ=$(echo "$DISK_STATS" | awk '{print $1/1024}')  # Convert to MB
+            DISK_WRITE=$(echo "$DISK_STATS" | awk '{print $2/1024}')  # Convert to MB
+        else
+            DISK_READ=0
+            DISK_WRITE=0
+        fi
+        
+        echo "$TIMESTAMP_NOW,$CPU,$MEM_USED,$MEM_PCT,$DISK_READ,$DISK_WRITE"
+        sleep 1
+    done
+} > "$RESOURCE_FILE" 2>/dev/null &
+MONITOR_PID=$!
+echo -e "${GREEN}✓ Resource monitoring started (PID: $MONITOR_PID)${NC}"
+echo ""
+
+# Run test
+echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}    Running Direct Logger Test                            ${NC}"
+echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}Configuration:${NC}"
+echo "  Threads:      $THREADS"
+echo "  Log size:     ${LOG_SIZE_KB}KB"
+echo "  Target RPS:   $TARGET_RPS"
+echo "  Duration:     $DURATION"
+echo "  Buffer:       ${BUFFER_MB}MB"
+echo "  Shards:       $SHARDS"
+echo "  Flush Int:    $FLUSH_INTERVAL"
+echo "  Event-based:  $USE_EVENTS"
+if [ "$USE_EVENTS" = true ]; then
+    echo "  Event name:   $EVENT_NAME"
+fi
+echo ""
+
+EVENT_FLAG=""
+if [ "$USE_EVENTS" = true ]; then
+    EVENT_FLAG="--use-events --event=$EVENT_NAME"
+fi
+
+TEST_LOG="$RESULTS_DIR/test_${TIMESTAMP}.log"
+START_TIME=$(date +%s)
+
+# Run test in background and capture PID
+"$RESULTS_DIR/direct_logger_test" \
+    --threads="$THREADS" \
+    --log-size-kb="$LOG_SIZE_KB" \
+    --rps="$TARGET_RPS" \
+    --duration="$DURATION" \
+    --buffer-mb="$BUFFER_MB" \
+    --shards="$SHARDS" \
+    --flush-interval="$FLUSH_INTERVAL" \
+    --log-dir="$LOG_DIR" \
+    $EVENT_FLAG \
+    > "$TEST_LOG" 2>&1 &
+TEST_PID=$!
+
+echo -e "${BLUE}Test started (PID: $TEST_PID)${NC}"
+echo -e "${BLUE}Logging to: $TEST_LOG${NC}"
+echo ""
+
+# Wait for test to complete
+echo -e "${BLUE}Waiting for test to complete...${NC}"
+wait $TEST_PID
+TEST_EXIT=$?
+END_TIME=$(date +%s)
+DURATION_SEC=$((END_TIME - START_TIME))
+
+# Stop resource monitoring
+kill $MONITOR_PID 2>/dev/null || true
+wait $MONITOR_PID 2>/dev/null || true
+
+if [ $TEST_EXIT -eq 0 ]; then
+    echo -e "${GREEN}✓ Test completed successfully in ${DURATION_SEC}s${NC}"
+else
+    echo -e "${RED}✗ Test failed with exit code: $TEST_EXIT${NC}"
+fi
+
+echo ""
+echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+echo -e "${CYAN}                      Test Results                          ${NC}"
+echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# Extract final metrics
+if [ -f "$TEST_LOG" ]; then
+    echo -e "${CYAN}Final Metrics:${NC}"
+    FINAL_METRICS=$(grep "METRICS:" "$TEST_LOG" | tail -1 | sed 's/.*METRICS: //')
+    if [ -n "$FINAL_METRICS" ]; then
+        echo "$FINAL_METRICS"
+    else
+        echo -e "${YELLOW}No metrics found in log${NC}"
+    fi
+    echo ""
+    
+    # Extract flush errors if any
+    FLUSH_ERROR_COUNT=$(grep -c "FLUSH_ERROR" "$TEST_LOG" 2>/dev/null || echo "0")
+    if [ "$FLUSH_ERROR_COUNT" -gt 0 ]; then
+        echo -e "${YELLOW}⚠ Flush Errors: $FLUSH_ERROR_COUNT${NC}"
+        grep "FLUSH_ERROR" "$TEST_LOG" | tail -5
+        echo ""
+    fi
+fi
+
+# Summary
+echo -e "${CYAN}Results Location:${NC}"
+echo "  Test log:      $TEST_LOG"
+echo "  Resource data: $RESOURCE_FILE"
+echo "  Log files:     $LOG_DIR/"
+echo ""
+echo -e "${GREEN}Test completed at: $(date)${NC}"
+
