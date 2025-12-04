@@ -4,7 +4,8 @@
 set -e
 
 echo "=== GCP VM Setup Script ==="
-echo "This script installs Docker, Go, protoc, ghz, and jq"
+echo "This script installs Go, protoc, ghz, and jq"
+echo "Note: Server runs directly on VM (no Docker required)"
 echo ""
 
 # Check if running as root
@@ -16,20 +17,6 @@ fi
 # Update system
 echo "Updating system packages..."
 sudo apt-get update
-
-# Install Docker
-if ! command -v docker &> /dev/null; then
-    echo ""
-    echo "Installing Docker..."
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sudo sh get-docker.sh
-    sudo usermod -aG docker $USER
-    rm get-docker.sh
-    echo "✓ Docker installed"
-    echo "⚠ Note: You may need to logout/login or run 'newgrp docker' for Docker permissions"
-else
-    echo "✓ Docker already installed: $(docker --version)"
-fi
 
 # Install Go
 if ! command -v go &> /dev/null; then
@@ -98,7 +85,6 @@ fi
 
 echo ""
 echo "=== Verification ==="
-echo "Docker: $(docker --version 2>/dev/null || echo 'Not found - may need logout/login')"
 echo "Go: $(go version 2>/dev/null || echo 'Not found')"
 echo "protoc: $(protoc --version 2>/dev/null || echo 'Not found')"
 echo "ghz: $(ghz --version 2>/dev/null || echo 'Not found - check ~/go/bin')"
@@ -108,10 +94,10 @@ echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. If Docker was just installed, logout/login or run: newgrp docker"
-echo "  2. If ghz not found, run: export PATH=\$PATH:\$HOME/go/bin"
-echo "  3. Install Go dependencies: go mod download"
-echo "  4. Regenerate proto files: protoc --go_out=. --go-grpc_out=. proto/random_numbers.proto"
+echo "  1. If ghz not found, run: export PATH=\$PATH:\$HOME/go/bin"
+echo "  2. Install Go dependencies: go mod download"
+echo "  3. Regenerate proto files: protoc --go_out=. --go-grpc_out=. proto/random_numbers.proto"
+echo "  4. Build server: go build -o bin/server ./server"
 echo "  5. Run baseline test: bash scripts/run_event_baseline_test.sh"
 echo ""
 

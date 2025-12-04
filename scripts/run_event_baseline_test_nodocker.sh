@@ -1,6 +1,4 @@
 #!/bin/bash
-# Docker-based test script (legacy)
-# For running without Docker, use: scripts/run_event_baseline_test_nodocker.sh
 
 set -euo pipefail
 
@@ -20,13 +18,13 @@ echo ""
 # Configuration
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULTS_DIR="results/event_baseline_test"
-CONTAINER_NAME="grpc-server-event-test"
 SERVER_PORT=8585
 DURATION="10m"
 THREADS=100
 BUFFER_MB=64
 SHARDS=8
 FLUSH_INTERVAL="10s"
+LOG_DIR="logs"
 
 # Event configuration
 EVENT1_RPS=350
@@ -34,22 +32,21 @@ EVENT2_RPS=350
 EVENT3_RPS=300
 TOTAL_RPS=$((EVENT1_RPS + EVENT2_RPS + EVENT3_RPS))
 
-# Create results directory
+# Create results and logs directories
 mkdir -p "$RESULTS_DIR"
+mkdir -p "$LOG_DIR"
+
+# Server process tracking
+SERVER_PID=""
+SERVER_LOG="$RESULTS_DIR/server_${TIMESTAMP}.log"
 
 # Function to clean up old test logs
 cleanup_old_logs() {
     echo -e "${BLUE}Cleaning up old test logs...${NC}"
     
-    # Clean up logs from previous test runs inside containers (only running ones)
-    RUNNING_CONTAINERS=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -E "grpc-server|event-test" || true)
-    if [ -n "$RUNNING_CONTAINERS" ]; then
-        echo "$RUNNING_CONTAINERS" | while IFS= read -r container; do
-            if [ -n "$container" ]; then
-                echo "  Cleaning logs from container: $container"
-                docker exec "$container" rm -rf /app/logs/*.log 2>/dev/null || true
-            fi
-        done
+    # Clean up old log files
+    if [ -d "$LOG_DIR" ]; then
+        find "$LOG_DIR" -name "*.log" -type f -mtime +1 -delete 2>/dev/null || true
     fi
     
     # Clean up old result files (keep last 3 runs)
@@ -64,23 +61,47 @@ cleanup_old_logs() {
     echo -e "${GREEN}✓ Cleanup complete${NC}"
 }
 
-
 # Function to clean up event logs after test completion
 cleanup_test_logs() {
     echo -e "${BLUE}Cleaning up event logs created during test...${NC}"
     
-    # Clean up event log files from the test container (only if running)
-    if docker ps --format "{{.Names}}" 2>/dev/null | grep -q "^${CONTAINER_NAME}$"; then
-        echo "  Removing event log files from container: $CONTAINER_NAME"
-        # Remove all event log files (event1.log, event2.log, event3.log, etc.)
-        docker exec $CONTAINER_NAME sh -c "rm -f /app/logs/event*.log /app/logs/*.log 2>/dev/null || true" 2>/dev/null || true
-        docker exec $CONTAINER_NAME find /app/logs -name "*.log" -type f -delete 2>/dev/null || true
+    if [ -d "$LOG_DIR" ]; then
+        echo "  Removing event log files from $LOG_DIR..."
+        rm -f "$LOG_DIR"/event*.log "$LOG_DIR"/*.log 2>/dev/null || true
         echo -e "${GREEN}✓ Event logs cleaned up${NC}"
     else
-        echo -e "${YELLOW}⚠ Container not running, skipping log cleanup${NC}"
+        echo -e "${YELLOW}⚠ Log directory not found${NC}"
     fi
 }
 
+# Function to check if port is in use
+check_port() {
+    if lsof -Pi :$SERVER_PORT -sTCP:LISTEN -t >/dev/null 2>&1 ; then
+        echo -e "${RED}✗ Port $SERVER_PORT is already in use${NC}"
+        echo "  Please stop the process using this port or change SERVER_PORT"
+        exit 1
+    fi
+}
+
+# Function to cleanup on exit
+cleanup() {
+    echo ""
+    echo -e "${YELLOW}Cleaning up...${NC}"
+    
+    # Stop server if running
+    if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo "  Stopping server (PID: $SERVER_PID)..."
+        kill "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    
+    # Kill any remaining server processes
+    pkill -f "./bin/server" 2>/dev/null || true
+    
+    cleanup_test_logs
+}
+
+trap cleanup EXIT INT TERM
 
 echo "Run started at: $(date)"
 echo "Results directory: $RESULTS_DIR"
@@ -97,34 +118,46 @@ echo ""
 cleanup_old_logs
 echo ""
 
-# Build Docker image
-echo -e "${BLUE}Building Docker image...${NC}"
-docker build -t grpc-server-test:latest -f docker/Dockerfile.server . > /dev/null 2>&1
-echo -e "${GREEN}✓ Docker image built${NC}"
-echo ""
+# Check if server binary exists
+if [ ! -f "./bin/server" ]; then
+    echo -e "${BLUE}Building server...${NC}"
+    go build -o bin/server ./server
+    echo -e "${GREEN}✓ Server built${NC}"
+else
+    echo -e "${GREEN}✓ Server binary found${NC}"
+fi
 
-# Cleanup any existing container
-docker rm -f $CONTAINER_NAME 2>/dev/null || true
+# Check port availability
+check_port
 
 # Start server
 echo -e "${BLUE}Starting server...${NC}"
-docker run -d \
-    --name $CONTAINER_NAME \
-    --cpus=4 \
-    --memory=4g \
-    -p $SERVER_PORT:$SERVER_PORT \
-    -e BUFFER_SIZE=$((BUFFER_MB * 1024 * 1024)) \
-    -e NUM_SHARDS=$SHARDS \
-    -e FLUSH_INTERVAL=$FLUSH_INTERVAL \
-    grpc-server-test:latest \
-    > /dev/null 2>&1
+BUFFER_SIZE=$((BUFFER_MB * 1024 * 1024))
+NUM_SHARDS=$SHARDS
+FLUSH_INTERVAL=$FLUSH_INTERVAL
+LOG_FILE="$LOG_DIR/server.log"
+
+# Start server in background
+./bin/server \
+    -log-buffer-size=$BUFFER_SIZE \
+    -log-num-shards=$NUM_SHARDS \
+    -log-flush-interval=$FLUSH_INTERVAL \
+    -log-file=$LOG_FILE \
+    > "$SERVER_LOG" 2>&1 &
+SERVER_PID=$!
 
 # Wait for server to be ready
 echo -e "${BLUE}Waiting for server to be ready...${NC}"
 for i in {1..30}; do
-    if docker logs $CONTAINER_NAME 2>&1 | grep -q "Listening on"; then
+    if grep -q "Listening on" "$SERVER_LOG" 2>/dev/null; then
         echo -e "${GREEN}✓ Server ready!${NC}"
         break
+    fi
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo -e "${RED}✗ Server failed to start${NC}"
+        echo "Last 20 lines of server log:"
+        tail -20 "$SERVER_LOG"
+        exit 1
     fi
     sleep 1
 done
@@ -133,29 +166,36 @@ done
 echo -e "${BLUE}Starting resource monitoring...${NC}"
 {
     echo "timestamp,cpu_percent,mem_usage_mb,mem_percent,disk_usage_mb,disk_available_mb,disk_usage_pct,io_read_mb,io_write_mb"
-    while docker ps | grep -q $CONTAINER_NAME; do
-        # Docker container stats
-        STATS=$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}},{{.BlockIO}}" $CONTAINER_NAME 2>/dev/null || echo "0%,0B / 0B,0B / 0B")
-        CPU=$(echo $STATS | cut -d',' -f1 | sed 's/%//')
-        MEM_RAW=$(echo $STATS | cut -d',' -f2)
-        MEM_USAGE=$(echo $MEM_RAW | awk '{print $1}' | numfmt --from=auto --to-unit=Mi 2>/dev/null || echo "0")
-        MEM_LIMIT=$(echo $MEM_RAW | awk '{print $3}' | numfmt --from=auto --to-unit=Mi 2>/dev/null || echo "1")
-        MEM_PCT=$(awk "BEGIN {printf \"%.2f\", ($MEM_USAGE/$MEM_LIMIT)*100}")
-        
-        # Block I/O stats
-        IO_RAW=$(echo $STATS | cut -d',' -f3)
-        IO_READ=$(echo $IO_RAW | awk '{print $1}' | numfmt --from=auto --to-unit=Mi 2>/dev/null || echo "0")
-        IO_WRITE=$(echo $IO_RAW | awk '{print $3}' | numfmt --from=auto --to-unit=Mi 2>/dev/null || echo "0")
-        
-        # Disk space monitoring (inside container)
-        DISK_INFO=$(docker exec $CONTAINER_NAME df -m /logs 2>/dev/null | tail -1 || echo "0 0 0 0")
-        DISK_TOTAL=$(echo $DISK_INFO | awk '{print $2}')
-        DISK_USED=$(echo $DISK_INFO | awk '{print $3}')
-        DISK_AVAIL=$(echo $DISK_INFO | awk '{print $4}')
-        DISK_PCT=$(echo $DISK_INFO | awk '{print $5}' | sed 's/%//' || echo "0")
-        
-        TIMESTAMP=$(date +%s)
-        echo "$TIMESTAMP,$CPU,$MEM_USAGE,$MEM_PCT,$DISK_USED,$DISK_AVAIL,$DISK_PCT,$IO_READ,$IO_WRITE"
+    while kill -0 "$SERVER_PID" 2>/dev/null; do
+        # Get process stats using ps and /proc
+        if [ -f "/proc/$SERVER_PID/stat" ]; then
+            # CPU percentage (simplified - uses ps)
+            CPU=$(ps -p "$SERVER_PID" -o %cpu --no-headers 2>/dev/null | tr -d ' ' || echo "0")
+            
+            # Memory stats from /proc
+            MEM_INFO=$(cat /proc/$SERVER_PID/status 2>/dev/null | grep -E "VmRSS|VmSize" || echo "")
+            MEM_RSS=$(echo "$MEM_INFO" | grep VmRSS | awk '{print $2}' || echo "0")
+            MEM_USAGE=$((MEM_RSS / 1024))  # Convert KB to MB
+            MEM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+            MEM_PCT=$(awk "BEGIN {printf \"%.2f\", ($MEM_USAGE/$MEM_TOTAL)*100}" 2>/dev/null || echo "0")
+            
+            # Disk I/O stats from /proc
+            IO_STATS=$(cat /proc/$SERVER_PID/io 2>/dev/null || echo "")
+            IO_READ=$(echo "$IO_STATS" | grep read_bytes | awk '{print $2}' || echo "0")
+            IO_WRITE=$(echo "$IO_STATS" | grep write_bytes | awk '{print $2}' || echo "0")
+            IO_READ_MB=$((IO_READ / 1024 / 1024))
+            IO_WRITE_MB=$((IO_WRITE / 1024 / 1024))
+            
+            # Disk space monitoring
+            DISK_INFO=$(df -m "$LOG_DIR" 2>/dev/null | tail -1 || echo "0 0 0 0")
+            DISK_TOTAL=$(echo "$DISK_INFO" | awk '{print $2}')
+            DISK_USED=$(echo "$DISK_INFO" | awk '{print $3}')
+            DISK_AVAIL=$(echo "$DISK_INFO" | awk '{print $4}')
+            DISK_PCT=$(echo "$DISK_INFO" | awk '{print $5}' | sed 's/%//' || echo "0")
+            
+            TIMESTAMP=$(date +%s)
+            echo "$TIMESTAMP,$CPU,$MEM_USAGE,$MEM_PCT,$DISK_USED,$DISK_AVAIL,$DISK_PCT,$IO_READ_MB,$IO_WRITE_MB"
+        fi
         sleep 1
     done
 } > "$RESULTS_DIR/resource_timeline_${TIMESTAMP}.csv" 2>/dev/null &
@@ -235,9 +275,13 @@ fi
 # Wait a moment for final metrics
 sleep 2
 
-# Collect server logs
+# Copy server log to results
 echo -e "${BLUE}Collecting server logs...${NC}"
-docker logs $CONTAINER_NAME > "$RESULTS_DIR/server_${TIMESTAMP}.log" 2>&1
+if [ -f "$SERVER_LOG" ]; then
+    cp "$SERVER_LOG" "$RESULTS_DIR/server_${TIMESTAMP}.log"
+else
+    echo "Server log not found at $SERVER_LOG"
+fi
 
 # Extract flush errors for analysis
 echo -e "${BLUE}Analyzing flush errors...${NC}"
@@ -251,16 +295,16 @@ fi
 kill $MONITOR_PID 2>/dev/null || true
 wait $MONITOR_PID 2>/dev/null || true
 
-# Clean up event logs before stopping container
+# Clean up event logs before stopping server
 cleanup_test_logs
 echo ""
 
-# Stop server
-echo -e "${YELLOW}Stopping server...${NC}"
-docker stop $CONTAINER_NAME > /dev/null 2>&1
-
-# Remove container
-docker rm $CONTAINER_NAME > /dev/null 2>&1
+# Stop server (cleanup function will handle this, but explicit stop for clarity)
+if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo -e "${YELLOW}Stopping server...${NC}"
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+fi
 
 echo -e "${GREEN}✓ Event-based baseline test complete!${NC}"
 echo ""
