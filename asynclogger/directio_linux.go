@@ -120,6 +120,15 @@ func writeAligned(file *os.File, data []byte) (int, error) {
 	return n, nil
 }
 
+// isAddressAligned checks if a buffer's memory address is aligned to alignmentSize
+func isAddressAligned(buf []byte) bool {
+	if len(buf) == 0 {
+		return true
+	}
+	addr := uintptr(unsafe.Pointer(&buf[0]))
+	return addr%alignmentSize == 0
+}
+
 // writevAligned writes multiple buffers to file in a single vectored I/O operation
 // Uses true syscall.Writev() - NO memory copy, just pointers!
 // This is the OPTIMAL implementation - reduces 8 syscalls to 1 with zero copy overhead
@@ -141,8 +150,9 @@ func writevAligned(file *os.File, buffers [][]byte) (int, error) {
 		totalActualSize += len(buf)
 		alignedSize := ((len(buf) + alignmentSize - 1) / alignmentSize) * alignmentSize
 
-		if len(buf) == alignedSize {
-			// Already aligned, use directly (zero copy!)
+		// Check both size AND address alignment for O_DIRECT
+		if len(buf) == alignedSize && isAddressAligned(buf) {
+			// Already aligned in both size and address, use directly (zero copy!)
 			alignedBuffers = append(alignedBuffers, buf)
 		} else {
 			// Need padding - get buffer from pool
