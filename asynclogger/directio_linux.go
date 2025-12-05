@@ -129,18 +129,26 @@ func isAddressAligned(buf []byte) bool {
 	return addr%alignmentSize == 0
 }
 
+// getFileSize returns the current file size
+func getFileSize(file *os.File) (int64, error) {
+	stat, err := file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return stat.Size(), nil
+}
+
 // ensureFileOffsetAligned ensures the file offset is aligned to 512 bytes for O_DIRECT
 // With O_APPEND, file offset = current file size, which must be aligned
 // If file is not aligned, we pad it by writing an aligned zero buffer
 // Note: With O_APPEND, all writes go to EOF, so we write padding buffer which will append
 func ensureFileOffsetAligned(file *os.File) error {
 	// Get current file size
-	stat, err := file.Stat()
+	currentSize, err := getFileSize(file)
 	if err != nil {
 		return fmt.Errorf("failed to stat file: %w", err)
 	}
 
-	currentSize := stat.Size()
 	alignedSize := ((currentSize + alignmentSize - 1) / alignmentSize) * alignmentSize
 
 	// If file size is not aligned, pad with zeros to align it
@@ -154,12 +162,19 @@ func ensureFileOffsetAligned(file *os.File) error {
 			for i := range zeroBuf {
 				zeroBuf[i] = 0
 			}
+			// Verify buffer alignment before writing
+			if !isAddressAligned(zeroBuf) {
+				return fmt.Errorf("padding buffer address not aligned (addr=%p)", &zeroBuf[0])
+			}
+			if len(zeroBuf) != alignmentSize {
+				return fmt.Errorf("padding buffer size not aligned (size=%d)", len(zeroBuf))
+			}
 			// Write full aligned buffer - first paddingSize bytes pad the file,
 			// remaining bytes are zeros that will be overwritten by next write
 			// With O_APPEND, this writes at EOF, aligning the file
-			_, err := unix.Writev(int(file.Fd()), [][]byte{zeroBuf})
+			n, err := unix.Writev(int(file.Fd()), [][]byte{zeroBuf})
 			if err != nil {
-				return fmt.Errorf("failed to pad file for alignment (current=%d, padding=%d): %w", currentSize, paddingSize, err)
+				return fmt.Errorf("failed to pad file for alignment (current=%d, padding=%d, wrote=%d): %w", currentSize, paddingSize, n, err)
 			}
 			// File is now aligned (currentSize + alignmentSize), but we only needed paddingSize
 			// The extra (alignmentSize - paddingSize) bytes will be overwritten by next write
@@ -180,8 +195,17 @@ func writevAligned(file *os.File, buffers [][]byte) (int, error) {
 
 	// CRITICAL: Ensure file offset is aligned for O_DIRECT
 	// With O_APPEND, file offset = current file size, which must be aligned
+	fileSizeBefore, err := getFileSize(file)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get file size: %w", err)
+	}
 	if err := ensureFileOffsetAligned(file); err != nil {
-		return 0, fmt.Errorf("failed to align file offset: %w", err)
+		return 0, fmt.Errorf("failed to align file offset (size=%d): %w", fileSizeBefore, err)
+	}
+	fileSizeAfter, _ := getFileSize(file)
+	if fileSizeBefore != fileSizeAfter {
+		// File was padded, log for debugging
+		fmt.Printf("[ALIGN_DEBUG] File padded: %d -> %d bytes\n", fileSizeBefore, fileSizeAfter)
 	}
 
 	// Prepare aligned buffers - each buffer aligned independently
@@ -251,11 +275,40 @@ func writevAligned(file *os.File, buffers [][]byte) (int, error) {
 		totalAlignedSize += len(buf)
 	}
 
+	// Verify all buffers meet O_DIRECT requirements before write
+	for i, buf := range alignedBuffers {
+		if len(buf) == 0 {
+			continue
+		}
+		if len(buf)%alignmentSize != 0 {
+			return 0, fmt.Errorf("buffer %d size not aligned: %d bytes", i, len(buf))
+		}
+		if !isAddressAligned(buf) {
+			addr := uintptr(unsafe.Pointer(&buf[0]))
+			return 0, fmt.Errorf("buffer %d address not aligned: %p (offset=%d)", i, &buf[0], addr%alignmentSize)
+		}
+	}
+
+	// Verify file offset is aligned
+	currentFileSize, err := getFileSize(file)
+	if err == nil {
+		if currentFileSize%alignmentSize != 0 {
+			return 0, fmt.Errorf("file offset not aligned: %d bytes (offset=%d)", currentFileSize, currentFileSize%alignmentSize)
+		}
+	}
+
 	// Single vectored write syscall - kernel reads from multiple buffers!
 	// unix.Writev takes [][]byte directly - NO iovec creation needed!
 	n, err := unix.Writev(int(file.Fd()), alignedBuffers)
 	if err != nil {
-		return n, fmt.Errorf("vectored I/O write failed: %w", err)
+		// Enhanced error message with alignment details
+		bufDetails := make([]string, len(alignedBuffers))
+		for i, buf := range alignedBuffers {
+			addr := uintptr(unsafe.Pointer(&buf[0]))
+			bufDetails[i] = fmt.Sprintf("buf[%d]: size=%d, addr=%p, addr_align=%d", i, len(buf), &buf[0], addr%alignmentSize)
+		}
+		return n, fmt.Errorf("vectored I/O write failed (file_size=%d, buffers=%d, details=[%s]): %w",
+			currentFileSize, len(alignedBuffers), fmt.Sprintf("%v", bufDetails), err)
 	}
 
 	// Return actual data written (not including padding)
