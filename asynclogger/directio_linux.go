@@ -12,8 +12,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// alignmentSize is the required alignment for O_DIRECT on Linux (typically 512 bytes)
-const alignmentSize = 512
+// alignmentSize is the required alignment for O_DIRECT on Linux
+// For ext4 filesystem, this must be 4096 bytes (4KB), not 512 bytes!
+// O_DIRECT requires alignment to filesystem block size, not just sector size
+const alignmentSize = 4096
 
 // flushBufferPool provides pre-allocated aligned buffers for flushing
 // Each buffer is 256MB to comfortably handle 128MB buffer + alignment padding
@@ -47,7 +49,7 @@ func openDirectIO(path string) (*os.File, error) {
 	return file, nil
 }
 
-// allocAlignedBuffer allocates a byte slice aligned to 512-byte boundary for O_DIRECT
+// allocAlignedBuffer allocates a byte slice aligned to filesystem block size (4096 bytes for ext4) for O_DIRECT
 func allocAlignedBuffer(size int) []byte {
 	// Round up to alignment
 	alignedSize := ((size + alignmentSize - 1) / alignmentSize) * alignmentSize
@@ -68,7 +70,7 @@ func allocAlignedBuffer(size int) []byte {
 	return buf[offset : offset+alignedSize]
 }
 
-// writeAligned writes data to file ensuring 512-byte alignment
+// writeAligned writes data to file ensuring filesystem block size alignment (4096 bytes for ext4)
 // Pads data if necessary to meet alignment requirements
 // Uses pooled buffers to eliminate allocations (was 290 MB/sec!)
 func writeAligned(file *os.File, data []byte) (int, error) {
@@ -138,7 +140,7 @@ func getFileSize(file *os.File) (int64, error) {
 	return stat.Size(), nil
 }
 
-// ensureFileOffsetAligned ensures the file offset is aligned to 512 bytes for O_DIRECT
+// ensureFileOffsetAligned ensures the file offset is aligned to filesystem block size (4096 bytes for ext4) for O_DIRECT
 // With O_APPEND, file offset = current file size, which must be aligned
 // If file is not aligned, we pad it by writing an aligned zero buffer
 // Note: With O_APPEND, all writes go to EOF, so we write padding buffer which will append
@@ -155,7 +157,7 @@ func ensureFileOffsetAligned(file *os.File) error {
 	if currentSize < alignedSize {
 		paddingSize := alignedSize - currentSize
 		if paddingSize > 0 && paddingSize < alignmentSize {
-			// With O_DIRECT, we MUST write at least alignmentSize bytes (512 bytes)
+			// With O_DIRECT, we MUST write at least alignmentSize bytes (4096 bytes for ext4)
 			// Allocate aligned zero buffer (full alignmentSize)
 			zeroBuf := allocAlignedBuffer(alignmentSize)
 			// Zero out the buffer
@@ -187,7 +189,7 @@ func ensureFileOffsetAligned(file *os.File) error {
 // writevAligned writes multiple buffers to file in a single vectored I/O operation
 // Uses true syscall.Writev() - NO memory copy, just pointers!
 // This is the OPTIMAL implementation - reduces 8 syscalls to 1 with zero copy overhead
-// IMPORTANT: With O_DIRECT, file offset must also be aligned to 512 bytes
+// IMPORTANT: With O_DIRECT, file offset must also be aligned to filesystem block size (4096 bytes for ext4)
 func writevAligned(file *os.File, buffers [][]byte) (int, error) {
 	if len(buffers) == 0 {
 		return 0, nil
@@ -199,6 +201,17 @@ func writevAligned(file *os.File, buffers [][]byte) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to get file size: %w", err)
 	}
+
+	// Log input buffer details for debugging
+	fmt.Printf("[WRITEV_DEBUG] Input: buffers=%d, file_size=%d\n", len(buffers), fileSizeBefore)
+	for i, buf := range buffers {
+		if len(buf) > 0 {
+			addr := uintptr(unsafe.Pointer(&buf[0]))
+			fmt.Printf("[WRITEV_DEBUG] Input buf[%d]: len=%d, addr=%p, addr_align=%d, size_align=%d\n",
+				i, len(buf), &buf[0], addr%alignmentSize, len(buf)%alignmentSize)
+		}
+	}
+
 	if err := ensureFileOffsetAligned(file); err != nil {
 		return 0, fmt.Errorf("failed to align file offset (size=%d): %w", fileSizeBefore, err)
 	}
@@ -222,9 +235,9 @@ func writevAligned(file *os.File, buffers [][]byte) (int, error) {
 		alignedSize := ((len(buf) + alignmentSize - 1) / alignmentSize) * alignmentSize
 
 		// Check both size AND address alignment for O_DIRECT
-		// O_DIRECT requires: (1) buffer size must be multiple of 512 bytes
-		//                    (2) buffer memory address must be aligned to 512 bytes
-		//                    (3) file offset must be aligned to 512 bytes (handled above)
+		// O_DIRECT requires: (1) buffer size must be multiple of filesystem block size (4096 bytes for ext4)
+		//                    (2) buffer memory address must be aligned to filesystem block size
+		//                    (3) file offset must be aligned to filesystem block size (handled above)
 		if len(buf) == alignedSize && isAddressAligned(buf) {
 			// Already aligned in both size and address, use directly (zero copy!)
 			alignedBuffers = append(alignedBuffers, buf)
@@ -276,16 +289,22 @@ func writevAligned(file *os.File, buffers [][]byte) (int, error) {
 	}
 
 	// Verify all buffers meet O_DIRECT requirements before write
+	fmt.Printf("[WRITEV_DEBUG] After alignment: buffers=%d\n", len(alignedBuffers))
 	for i, buf := range alignedBuffers {
 		if len(buf) == 0 {
 			continue
 		}
-		if len(buf)%alignmentSize != 0 {
-			return 0, fmt.Errorf("buffer %d size not aligned: %d bytes", i, len(buf))
+		addr := uintptr(unsafe.Pointer(&buf[0]))
+		sizeAlign := len(buf) % alignmentSize
+		addrAlign := addr % alignmentSize
+		fmt.Printf("[WRITEV_DEBUG] Aligned buf[%d]: len=%d, addr=%p, size_align=%d, addr_align=%d\n",
+			i, len(buf), &buf[0], sizeAlign, addrAlign)
+
+		if sizeAlign != 0 {
+			return 0, fmt.Errorf("buffer %d size not aligned: %d bytes (remainder=%d)", i, len(buf), sizeAlign)
 		}
-		if !isAddressAligned(buf) {
-			addr := uintptr(unsafe.Pointer(&buf[0]))
-			return 0, fmt.Errorf("buffer %d address not aligned: %p (offset=%d)", i, &buf[0], addr%alignmentSize)
+		if addrAlign != 0 {
+			return 0, fmt.Errorf("buffer %d address not aligned: %p (offset=%d)", i, &buf[0], addrAlign)
 		}
 	}
 
