@@ -182,17 +182,25 @@ func worker(
 func printStats(loggerManager *asynclogger.LoggerManager, logger *asynclogger.Logger, useEventLogger bool) {
 	var totalLogs, droppedLogs, bytesWritten, flushes, flushErrors, setSwaps int64
 	var avgFlushMs, maxFlushMs float64
+	var avgWriteMs, maxWriteMs float64
+	var writePercent float64
 
 	if useEventLogger && loggerManager != nil {
 		totalLogs, droppedLogs, bytesWritten, flushes, flushErrors, setSwaps = loggerManager.GetStatsSnapshot()
 		flushMetrics := loggerManager.GetAggregatedFlushMetrics()
 		avgFlushMs = float64(flushMetrics.AvgFlushDuration.Nanoseconds()) / 1e6
 		maxFlushMs = float64(flushMetrics.MaxFlushDuration.Nanoseconds()) / 1e6
+		avgWriteMs = float64(flushMetrics.AvgWriteDuration.Nanoseconds()) / 1e6
+		maxWriteMs = float64(flushMetrics.MaxWriteDuration.Nanoseconds()) / 1e6
+		writePercent = flushMetrics.WritePercent
 	} else if logger != nil {
 		totalLogs, droppedLogs, bytesWritten, flushes, flushErrors, setSwaps = logger.GetStatsSnapshot()
 		flushMetrics := logger.GetFlushMetrics()
 		avgFlushMs = float64(flushMetrics.AvgFlushDuration.Nanoseconds()) / 1e6
 		maxFlushMs = float64(flushMetrics.MaxFlushDuration.Nanoseconds()) / 1e6
+		avgWriteMs = float64(flushMetrics.AvgWriteDuration.Nanoseconds()) / 1e6
+		maxWriteMs = float64(flushMetrics.MaxWriteDuration.Nanoseconds()) / 1e6
+		writePercent = flushMetrics.WritePercent
 	}
 
 	dropRate := 0.0
@@ -203,9 +211,10 @@ func printStats(loggerManager *asynclogger.LoggerManager, logger *asynclogger.Lo
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	log.Printf("METRICS: Logs: %d Dropped: %d (%.4f%%) | Bytes: %d | Flushes: %d Errors: %d Swaps: %d | AvgFlush: %.2fms MaxFlush: %.2fms | GC: %d cycles %.2fms pause | Mem: %.2fMB",
+	log.Printf("METRICS: Logs: %d Dropped: %d (%.4f%%) | Bytes: %d | Flushes: %d Errors: %d Swaps: %d | AvgFlush: %.2fms MaxFlush: %.2fms | AvgWrite: %.2fms MaxWrite: %.2fms WritePct: %.1f%% | GC: %d cycles %.2fms pause | Mem: %.2fMB",
 		totalLogs, droppedLogs, dropRate, bytesWritten, flushes, flushErrors, setSwaps,
 		avgFlushMs, maxFlushMs,
+		avgWriteMs, maxWriteMs, writePercent,
 		memStats.NumGC, float64(memStats.PauseTotalNs)/1e6,
 		float64(memStats.Alloc)/1024/1024)
 }
