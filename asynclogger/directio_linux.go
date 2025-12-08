@@ -370,6 +370,11 @@ func (fw *FileWriter) swapFiles() error {
 		return fmt.Errorf("next file is not set")
 	}
 
+	// Defensive check: ensure current file is valid (fast pointer check, no performance impact)
+	if fw.file == nil {
+		return fmt.Errorf("current file is nil")
+	}
+
 	// Sync current file to ensure all data is written
 	if err := unix.Fsync(fw.fd); err != nil {
 		return fmt.Errorf("failed to sync current file: %w", err)
@@ -398,6 +403,11 @@ func (fw *FileWriter) swapFiles() error {
 // WriteVectored writes multiple buffers to the file using vectored I/O
 // Handles rotation automatically before writing
 func (fw *FileWriter) WriteVectored(buffers [][]byte) (int, error) {
+	// Fast path: skip if no data to write (defensive check, no performance impact)
+	if len(buffers) == 0 {
+		return 0, nil
+	}
+
 	// Check and perform rotation if needed
 	if err := fw.rotateIfNeeded(); err != nil {
 		return 0, fmt.Errorf("rotation failed: %w", err)
