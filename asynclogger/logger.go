@@ -3,7 +3,6 @@ package asynclogger
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -38,8 +37,8 @@ type Logger struct {
 	// Active set pointer (atomically swapped)
 	activeSet atomic.Pointer[BufferSet]
 
-	// File for writing logs with Direct I/O
-	file *os.File
+	// FileWriter for writing logs with Direct I/O and rotation support
+	fileWriter *FileWriter
 
 	// Channel for flush requests
 	flushChan chan *BufferSet
@@ -80,10 +79,10 @@ func New(config Config) (*Logger, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Open file with Direct I/O
-	file, err := openDirectIO(config.LogFilePath)
+	// Create FileWriter for Direct I/O with rotation support
+	fileWriter, err := NewFileWriter(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open log file: %w", err)
+		return nil, fmt.Errorf("failed to create file writer: %w", err)
 	}
 
 	// Create two buffer sets for double buffering
@@ -94,7 +93,7 @@ func New(config Config) (*Logger, error) {
 	l := &Logger{
 		setA:          setA,
 		setB:          setB,
-		file:          file,
+		fileWriter:    fileWriter,
 		flushChan:     make(chan *BufferSet, 2), // Buffer for both sets
 		ticker:        time.NewTicker(config.FlushInterval),
 		done:          make(chan struct{}),
@@ -348,7 +347,7 @@ func (l *Logger) flushSet(set *BufferSet) {
 	// Single batched write for all shards - track timing
 	if len(shardBuffers) > 0 {
 		writeStart := time.Now()
-		n, err := writevAligned(l.file, shardBuffers)
+		n, err := l.fileWriter.WriteVectored(shardBuffers)
 		writeDuration := time.Since(writeStart)
 
 		// Track write duration
@@ -390,7 +389,7 @@ func (l *Logger) flushSet(set *BufferSet) {
 	}
 
 	// Note: With O_DSYNC flag, each write() automatically syncs data to disk
-	// No explicit file.Sync() call needed - sync happens during writevAligned()
+	// No explicit file.Sync() call needed - sync happens during WriteVectored()
 
 	// Track flush duration
 	flushDuration := time.Since(flushStart)
@@ -454,9 +453,9 @@ func (l *Logger) Close() error {
 		l.flushSet(inactiveSet)
 	}
 
-	// Close the file
-	if err := l.file.Close(); err != nil {
-		return fmt.Errorf("failed to close log file: %w", err)
+	// Close the file writer (handles rotation cleanup)
+	if err := l.fileWriter.Close(); err != nil {
+		return fmt.Errorf("failed to close file writer: %w", err)
 	}
 
 	return nil

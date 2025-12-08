@@ -29,10 +29,11 @@ func main() {
 		duration       = flag.Duration("duration", 10*time.Minute, "Test duration")
 		bufferMB       = flag.Int("buffer-mb", 64, "Buffer size in MB")
 		numShards      = flag.Int("shards", 8, "Number of shards")
-		flushInterval  = flag.Duration("flush-interval", 10*time.Second, "Flush interval")
-		logDir         = flag.String("log-dir", "logs", "Log directory")
-		eventName      = flag.String("event", "test", "Event name for event-based logging")
-		useEventLogger = flag.Bool("use-events", false, "Use LoggerManager with event-based logging")
+		flushInterval    = flag.Duration("flush-interval", 10*time.Second, "Flush interval")
+		rotationInterval = flag.Duration("rotation-interval", 24*time.Hour, "File rotation interval (0 to disable)")
+		logDir           = flag.String("log-dir", "logs", "Log directory")
+		eventName        = flag.String("event", "test", "Event name for event-based logging")
+		useEventLogger   = flag.Bool("use-events", false, "Use LoggerManager with event-based logging")
 	)
 	flag.Parse()
 
@@ -49,10 +50,11 @@ func main() {
 	if *useEventLogger {
 		// Use LoggerManager for event-based logging
 		config := asynclogger.Config{
-			BufferSize:    *bufferMB * 1024 * 1024,
-			NumShards:     *numShards,
-			FlushInterval: *flushInterval,
-			LogFilePath:   fmt.Sprintf("%s/%s.log", *logDir, *eventName),
+			BufferSize:      *bufferMB * 1024 * 1024,
+			NumShards:       *numShards,
+			FlushInterval:   *flushInterval,
+			RotationInterval: *rotationInterval,
+			LogFilePath:     fmt.Sprintf("%s/%s.log", *logDir, *eventName),
 		}
 		loggerManager, err = asynclogger.NewLoggerManager(config)
 		if err != nil {
@@ -62,10 +64,11 @@ func main() {
 	} else {
 		// Use single Logger
 		config := asynclogger.Config{
-			BufferSize:    *bufferMB * 1024 * 1024,
-			NumShards:     *numShards,
-			FlushInterval: *flushInterval,
-			LogFilePath:   fmt.Sprintf("%s/direct_test.log", *logDir),
+			BufferSize:      *bufferMB * 1024 * 1024,
+			NumShards:       *numShards,
+			FlushInterval:   *flushInterval,
+			RotationInterval: *rotationInterval,
+			LogFilePath:     fmt.Sprintf("%s/direct_test.log", *logDir),
 		}
 		logger, err = asynclogger.New(config)
 		if err != nil {
@@ -84,6 +87,7 @@ func main() {
 	log.Printf("  Target RPS: %d (%.2f per thread)", *targetRPS, ratePerThread)
 	log.Printf("  Duration: %v", *duration)
 	log.Printf("  Buffer: %d MB, Shards: %d", *bufferMB, *numShards)
+	log.Printf("  Rotation Interval: %v", *rotationInterval)
 	log.Printf("  Event-based: %v", *useEventLogger)
 	log.Println()
 
@@ -218,4 +222,3 @@ func printStats(loggerManager *asynclogger.LoggerManager, logger *asynclogger.Lo
 		memStats.NumGC, float64(memStats.PauseTotalNs)/1e6,
 		float64(memStats.Alloc)/1024/1024)
 }
-

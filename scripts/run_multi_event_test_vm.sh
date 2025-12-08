@@ -25,6 +25,7 @@ LOG_SIZE_KB=300
 BUFFER_MB=64
 SHARDS=8
 FLUSH_INTERVAL="10s"
+ROTATION_INTERVAL="24h"
 
 # Event configuration (can be overridden via command line)
 EVENT1_NAME="event1"
@@ -74,6 +75,10 @@ while [[ $# -gt 0 ]]; do
             EVENT3_RPS="$2"
             shift 2
             ;;
+        --rotation-interval)
+            ROTATION_INTERVAL="$2"
+            shift 2
+            ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -86,6 +91,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --event1-rps RPS         Event1 RPS (default: 350)"
             echo "  --event2-rps RPS         Event2 RPS (default: 350)"
             echo "  --event3-rps RPS         Event3 RPS (default: 300)"
+            echo "  --rotation-interval DURATION  File rotation interval (default: 24h, use 0 to disable)"
             echo "  --help                  Show this help"
             exit 0
             ;;
@@ -188,6 +194,7 @@ echo "  Total Threads: $THREADS"
 echo "  Total RPS: $TOTAL_RPS"
 echo "  Buffer: ${BUFFER_MB}MB, Shards: $SHARDS"
 echo "  Log Size: ${LOG_SIZE_KB}KB"
+echo "  Rotation Interval: $ROTATION_INTERVAL"
 echo ""
 echo -e "${CYAN}Event Distribution:${NC}"
 echo "  $EVENT1_NAME: ${EVENT1_RPS} RPS, $EVENT1_THREADS threads"
@@ -214,6 +221,7 @@ EVENT1_LOG="$RESULTS_DIR/${EVENT1_NAME}_test.log"
     --buffer-mb "$BUFFER_MB" \
     --shards "$SHARDS" \
     --flush-interval "$FLUSH_INTERVAL" \
+    --rotation-interval "$ROTATION_INTERVAL" \
     --log-dir "$LOG_DIR" \
     --use-events \
     --event "$EVENT1_NAME" \
@@ -232,6 +240,7 @@ EVENT2_LOG="$RESULTS_DIR/${EVENT2_NAME}_test.log"
     --buffer-mb "$BUFFER_MB" \
     --shards "$SHARDS" \
     --flush-interval "$FLUSH_INTERVAL" \
+    --rotation-interval "$ROTATION_INTERVAL" \
     --log-dir "$LOG_DIR" \
     --use-events \
     --event "$EVENT2_NAME" \
@@ -250,6 +259,7 @@ EVENT3_LOG="$RESULTS_DIR/${EVENT3_NAME}_test.log"
     --buffer-mb "$BUFFER_MB" \
     --shards "$SHARDS" \
     --flush-interval "$FLUSH_INTERVAL" \
+    --rotation-interval "$ROTATION_INTERVAL" \
     --log-dir "$LOG_DIR" \
     --use-events \
     --event "$EVENT3_NAME" \
@@ -412,4 +422,5 @@ echo "  Summary: $SUMMARY_FILE"
 echo "  Event logs: $RESULTS_DIR/*_test.log"
 echo "  Resource monitor: $RESULTS_DIR/resource_monitor.log"
 echo "  Log files: $LOG_DIR/event*.log"
+
 
