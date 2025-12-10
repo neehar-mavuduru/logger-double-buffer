@@ -1,0 +1,19 @@
+VM Testing Scripts Summary
+==========================
+
+Created Files:
+1. scripts/run_single_logger_test_vm.sh - Single logger test script
+2. scripts/run_multi_event_test_vm.sh - Multi-event logger test script (updated)
+3. scripts/VM_TESTING_GUIDE.md - Comprehensive testing guide
+4. scripts/VM_TEST_QUICK_START.md - Quick reference guide
+5. scripts/VM_TEST_STEPS.md - Step-by-step execution guide
+6. scripts/README_VM_TESTING.md - Overview document
+
+Updated Files:
+1. cmd/direct_logger_test/main.go - Added rotation-interval flag support
+
+Test Scenarios:
+- Single Logger: Tests basic logger with one log file
+- Multi-Event Logger: Tests LoggerManager with 3 concurrent events
+
+All scripts are executable and ready to use.

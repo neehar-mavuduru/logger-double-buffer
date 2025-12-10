@@ -124,3 +124,5 @@ CHANGES_TO_PUSH.md
 # Keep only essential files
 !asynclogger/README.md
 
+.pre-commit-config.yaml
+trufflehog/

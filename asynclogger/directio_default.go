@@ -133,10 +133,10 @@ func extractBasePath(fullPath string) (dir, baseName string, err error) {
 // Note: Rotation is simplified on non-Linux (no O_DIRECT support)
 type FileWriter struct {
 	// Current file
-	file         *os.File
-	fd           int
-	filePath     string
-	fileOffset   atomic.Int64
+	file          *os.File
+	fd            int
+	filePath      string
+	fileOffset    atomic.Int64
 	fileCreatedAt time.Time
 
 	// Next file (for rotation)

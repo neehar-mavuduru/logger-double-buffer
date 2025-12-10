@@ -677,7 +677,7 @@ func TestFileWriter_DataIntegrity(t *testing.T) {
 					// Create unique data
 					data := []byte(fmt.Sprintf("goroutine-%d-write-%d", id, j))
 					n, err := fw.WriteVectored([][]byte{data})
-					
+
 					mu.Lock()
 					if err != nil {
 						writeErrors = append(writeErrors, err)
@@ -941,4 +941,3 @@ func TestFileWriter_IntegrationWithLogger(t *testing.T) {
 		assert.Greater(t, len(files), 0)
 	})
 }
-

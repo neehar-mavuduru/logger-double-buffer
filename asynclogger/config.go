@@ -33,11 +33,11 @@ type Config struct {
 func DefaultConfig(logPath string) Config {
 	return Config{
 		LogFilePath:      logPath,
-		BufferSize:        64 * 1024 * 1024,      // 64MB (baseline configuration)
-		NumShards:         8,                     // 8 shards
-		FlushInterval:     10 * time.Second,      // 10 seconds
-		FlushTimeout:      10 * time.Millisecond, // 10ms timeout for write completion
-		RotationInterval:  24 * time.Hour,        // 24 hours (default rotation interval)
+		BufferSize:       64 * 1024 * 1024,      // 64MB (baseline configuration)
+		NumShards:        8,                     // 8 shards
+		FlushInterval:    10 * time.Second,      // 10 seconds
+		FlushTimeout:     10 * time.Millisecond, // 10ms timeout for write completion
+		RotationInterval: 24 * time.Hour,        // 24 hours (default rotation interval)
 	}
 }
 
