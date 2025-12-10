@@ -224,8 +224,10 @@ func (lm *LoggerManager) GetStatsSnapshot() (totalLogs, droppedLogs, bytesWritte
 func (lm *LoggerManager) GetAggregatedFlushMetrics() FlushMetrics {
 	var totalFlushDuration int64
 	var totalWriteDuration int64
+	var totalPwritevDuration int64
 	var maxFlushDuration int64
 	var maxWriteDuration int64
+	var maxPwritevDuration int64
 	var totalFlushes int64
 	var totalBlockedSwaps int64
 
@@ -234,11 +236,15 @@ func (lm *LoggerManager) GetAggregatedFlushMetrics() FlushMetrics {
 		metrics := logger.GetFlushMetrics()
 		totalFlushDuration += metrics.TotalFlushDuration.Nanoseconds()
 		totalWriteDuration += metrics.AvgWriteDuration.Nanoseconds() * metrics.TotalFlushes
+		totalPwritevDuration += metrics.AvgPwritevDuration.Nanoseconds() * metrics.TotalFlushes
 		if metrics.MaxFlushDuration.Nanoseconds() > maxFlushDuration {
 			maxFlushDuration = metrics.MaxFlushDuration.Nanoseconds()
 		}
 		if metrics.MaxWriteDuration.Nanoseconds() > maxWriteDuration {
 			maxWriteDuration = metrics.MaxWriteDuration.Nanoseconds()
+		}
+		if metrics.MaxPwritevDuration.Nanoseconds() > maxPwritevDuration {
+			maxPwritevDuration = metrics.MaxPwritevDuration.Nanoseconds()
 		}
 		totalFlushes += metrics.TotalFlushes
 		totalBlockedSwaps += metrics.BlockedSwaps
@@ -247,15 +253,19 @@ func (lm *LoggerManager) GetAggregatedFlushMetrics() FlushMetrics {
 
 	avgFlushDuration := time.Duration(0)
 	avgWriteDuration := time.Duration(0)
+	avgPwritevDuration := time.Duration(0)
 	writePercent := 0.0
+	pwritevPercent := 0.0
 
 	if totalFlushes > 0 {
 		avgFlushDuration = time.Duration(totalFlushDuration / totalFlushes)
 		avgWriteDuration = time.Duration(totalWriteDuration / totalFlushes)
+		avgPwritevDuration = time.Duration(totalPwritevDuration / totalFlushes)
 	}
 
 	if totalFlushDuration > 0 {
 		writePercent = float64(totalWriteDuration) / float64(totalFlushDuration) * 100.0
+		pwritevPercent = float64(totalPwritevDuration) / float64(totalFlushDuration) * 100.0
 	}
 
 	return FlushMetrics{
@@ -268,6 +278,9 @@ func (lm *LoggerManager) GetAggregatedFlushMetrics() FlushMetrics {
 		AvgWriteDuration:   avgWriteDuration,
 		MaxWriteDuration:   time.Duration(maxWriteDuration),
 		WritePercent:       writePercent,
+		AvgPwritevDuration: avgPwritevDuration,
+		MaxPwritevDuration: time.Duration(maxPwritevDuration),
+		PwritevPercent:     pwritevPercent,
 	}
 }
 

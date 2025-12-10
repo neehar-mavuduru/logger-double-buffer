@@ -24,8 +24,12 @@ type Statistics struct {
 	BlockedSwaps       atomic.Int64 // Number of swaps that blocked waiting for flush
 
 	// Detailed I/O breakdown (for disk I/O investigation)
-	TotalWriteDuration atomic.Int64 // Time spent in writeAligned() (nanoseconds)
+	TotalWriteDuration atomic.Int64 // Time spent in WriteVectored() including rotation checks (nanoseconds)
 	MaxWriteDuration   atomic.Int64 // Maximum write duration (nanoseconds)
+
+	// Pwritev syscall timing (pure disk I/O, excludes rotation checks)
+	TotalPwritevDuration atomic.Int64 // Time spent in Pwritev syscall only (nanoseconds)
+	MaxPwritevDuration   atomic.Int64 // Maximum Pwritev duration (nanoseconds)
 }
 
 // Logger is an async logger using Sharded Double Buffer CAS with Direct I/O
@@ -350,7 +354,7 @@ func (l *Logger) flushSet(set *BufferSet) {
 		n, err := l.fileWriter.WriteVectored(shardBuffers)
 		writeDuration := time.Since(writeStart)
 
-		// Track write duration
+		// Track write duration (includes rotation checks)
 		writeDurationNs := writeDuration.Nanoseconds()
 		l.stats.TotalWriteDuration.Add(writeDurationNs)
 
@@ -362,6 +366,24 @@ func (l *Logger) flushSet(set *BufferSet) {
 			}
 			if l.stats.MaxWriteDuration.CompareAndSwap(currentMax, writeDurationNs) {
 				break
+			}
+		}
+
+		// Track Pwritev syscall duration (pure disk I/O, excludes rotation checks)
+		pwritevDuration := l.fileWriter.GetLastPwritevDuration()
+		if pwritevDuration > 0 {
+			pwritevDurationNs := pwritevDuration.Nanoseconds()
+			l.stats.TotalPwritevDuration.Add(pwritevDurationNs)
+
+			// Update max Pwritev duration atomically
+			for {
+				currentMax := l.stats.MaxPwritevDuration.Load()
+				if pwritevDurationNs <= currentMax {
+					break
+				}
+				if l.stats.MaxPwritevDuration.CompareAndSwap(currentMax, pwritevDurationNs) {
+					break
+				}
 			}
 		}
 
@@ -481,28 +503,38 @@ type FlushMetrics struct {
 	TotalFlushes       int64         // Total number of flushes
 
 	// I/O breakdown (for disk I/O investigation)
-	AvgWriteDuration time.Duration // Average time for writeAligned()
+	AvgWriteDuration time.Duration // Average time for WriteVectored() (includes rotation checks)
 	MaxWriteDuration time.Duration // Maximum write duration
 	WritePercent     float64       // % of flush time spent in write
+
+	// Pwritev syscall timing (pure disk I/O, excludes rotation checks)
+	AvgPwritevDuration time.Duration // Average time for Pwritev syscall only
+	MaxPwritevDuration time.Duration // Maximum Pwritev duration
+	PwritevPercent     float64       // % of flush time spent in Pwritev syscall
 }
 
 // GetFlushMetrics returns flush performance metrics
 func (l *Logger) GetFlushMetrics() FlushMetrics {
 	totalDuration := l.stats.TotalFlushDuration.Load()
 	totalWrite := l.stats.TotalWriteDuration.Load()
+	totalPwritev := l.stats.TotalPwritevDuration.Load()
 	flushes := l.stats.Flushes.Load()
 
 	avgFlushDuration := time.Duration(0)
 	avgWriteDuration := time.Duration(0)
+	avgPwritevDuration := time.Duration(0)
 	writePercent := 0.0
+	pwritevPercent := 0.0
 
 	if flushes > 0 {
 		avgFlushDuration = time.Duration(totalDuration / flushes)
 		avgWriteDuration = time.Duration(totalWrite / flushes)
+		avgPwritevDuration = time.Duration(totalPwritev / flushes)
 	}
 
 	if totalDuration > 0 {
 		writePercent = float64(totalWrite) / float64(totalDuration) * 100.0
+		pwritevPercent = float64(totalPwritev) / float64(totalDuration) * 100.0
 	}
 
 	return FlushMetrics{
@@ -515,6 +547,9 @@ func (l *Logger) GetFlushMetrics() FlushMetrics {
 		AvgWriteDuration:   avgWriteDuration,
 		MaxWriteDuration:   time.Duration(l.stats.MaxWriteDuration.Load()),
 		WritePercent:       writePercent,
+		AvgPwritevDuration: avgPwritevDuration,
+		MaxPwritevDuration: time.Duration(l.stats.MaxPwritevDuration.Load()),
+		PwritevPercent:     pwritevPercent,
 	}
 }
 

@@ -23,12 +23,12 @@ var (
 func main() {
 	// Configuration
 	var (
-		numThreads     = flag.Int("threads", 100, "Number of concurrent threads")
-		logSizeKB      = flag.Int("log-size-kb", 300, "Log size in KB")
-		targetRPS      = flag.Int("rps", 1000, "Target requests per second (total across all threads)")
-		duration       = flag.Duration("duration", 10*time.Minute, "Test duration")
-		bufferMB       = flag.Int("buffer-mb", 64, "Buffer size in MB")
-		numShards      = flag.Int("shards", 8, "Number of shards")
+		numThreads       = flag.Int("threads", 100, "Number of concurrent threads")
+		logSizeKB        = flag.Int("log-size-kb", 300, "Log size in KB")
+		targetRPS        = flag.Int("rps", 1000, "Target requests per second (total across all threads)")
+		duration         = flag.Duration("duration", 10*time.Minute, "Test duration")
+		bufferMB         = flag.Int("buffer-mb", 64, "Buffer size in MB")
+		numShards        = flag.Int("shards", 8, "Number of shards")
 		flushInterval    = flag.Duration("flush-interval", 10*time.Second, "Flush interval")
 		rotationInterval = flag.Duration("rotation-interval", 24*time.Hour, "File rotation interval (0 to disable)")
 		logDir           = flag.String("log-dir", "logs", "Log directory")
@@ -50,11 +50,11 @@ func main() {
 	if *useEventLogger {
 		// Use LoggerManager for event-based logging
 		config := asynclogger.Config{
-			BufferSize:      *bufferMB * 1024 * 1024,
-			NumShards:       *numShards,
-			FlushInterval:   *flushInterval,
+			BufferSize:       *bufferMB * 1024 * 1024,
+			NumShards:        *numShards,
+			FlushInterval:    *flushInterval,
 			RotationInterval: *rotationInterval,
-			LogFilePath:     fmt.Sprintf("%s/%s.log", *logDir, *eventName),
+			LogFilePath:      fmt.Sprintf("%s/%s.log", *logDir, *eventName),
 		}
 		loggerManager, err = asynclogger.NewLoggerManager(config)
 		if err != nil {
@@ -64,11 +64,11 @@ func main() {
 	} else {
 		// Use single Logger
 		config := asynclogger.Config{
-			BufferSize:      *bufferMB * 1024 * 1024,
-			NumShards:       *numShards,
-			FlushInterval:   *flushInterval,
+			BufferSize:       *bufferMB * 1024 * 1024,
+			NumShards:        *numShards,
+			FlushInterval:    *flushInterval,
 			RotationInterval: *rotationInterval,
-			LogFilePath:     fmt.Sprintf("%s/direct_test.log", *logDir),
+			LogFilePath:      fmt.Sprintf("%s/direct_test.log", *logDir),
 		}
 		logger, err = asynclogger.New(config)
 		if err != nil {
@@ -188,6 +188,8 @@ func printStats(loggerManager *asynclogger.LoggerManager, logger *asynclogger.Lo
 	var avgFlushMs, maxFlushMs float64
 	var avgWriteMs, maxWriteMs float64
 	var writePercent float64
+	var avgPwritevMs, maxPwritevMs float64
+	var pwritevPercent float64
 
 	if useEventLogger && loggerManager != nil {
 		totalLogs, droppedLogs, bytesWritten, flushes, flushErrors, setSwaps = loggerManager.GetStatsSnapshot()
@@ -197,6 +199,9 @@ func printStats(loggerManager *asynclogger.LoggerManager, logger *asynclogger.Lo
 		avgWriteMs = float64(flushMetrics.AvgWriteDuration.Nanoseconds()) / 1e6
 		maxWriteMs = float64(flushMetrics.MaxWriteDuration.Nanoseconds()) / 1e6
 		writePercent = flushMetrics.WritePercent
+		avgPwritevMs = float64(flushMetrics.AvgPwritevDuration.Nanoseconds()) / 1e6
+		maxPwritevMs = float64(flushMetrics.MaxPwritevDuration.Nanoseconds()) / 1e6
+		pwritevPercent = flushMetrics.PwritevPercent
 	} else if logger != nil {
 		totalLogs, droppedLogs, bytesWritten, flushes, flushErrors, setSwaps = logger.GetStatsSnapshot()
 		flushMetrics := logger.GetFlushMetrics()
@@ -205,6 +210,9 @@ func printStats(loggerManager *asynclogger.LoggerManager, logger *asynclogger.Lo
 		avgWriteMs = float64(flushMetrics.AvgWriteDuration.Nanoseconds()) / 1e6
 		maxWriteMs = float64(flushMetrics.MaxWriteDuration.Nanoseconds()) / 1e6
 		writePercent = flushMetrics.WritePercent
+		avgPwritevMs = float64(flushMetrics.AvgPwritevDuration.Nanoseconds()) / 1e6
+		maxPwritevMs = float64(flushMetrics.MaxPwritevDuration.Nanoseconds()) / 1e6
+		pwritevPercent = flushMetrics.PwritevPercent
 	}
 
 	dropRate := 0.0
@@ -215,10 +223,11 @@ func printStats(loggerManager *asynclogger.LoggerManager, logger *asynclogger.Lo
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	log.Printf("METRICS: Logs: %d Dropped: %d (%.4f%%) | Bytes: %d | Flushes: %d Errors: %d Swaps: %d | AvgFlush: %.2fms MaxFlush: %.2fms | AvgWrite: %.2fms MaxWrite: %.2fms WritePct: %.1f%% | GC: %d cycles %.2fms pause | Mem: %.2fMB",
+	log.Printf("METRICS: Logs: %d Dropped: %d (%.4f%%) | Bytes: %d | Flushes: %d Errors: %d Swaps: %d | AvgFlush: %.2fms MaxFlush: %.2fms | AvgWrite: %.2fms MaxWrite: %.2fms WritePct: %.1f%% | AvgPwritev: %.2fms MaxPwritev: %.2fms PwritevPct: %.1f%% | GC: %d cycles %.2fms pause | Mem: %.2fMB",
 		totalLogs, droppedLogs, dropRate, bytesWritten, flushes, flushErrors, setSwaps,
 		avgFlushMs, maxFlushMs,
 		avgWriteMs, maxWriteMs, writePercent,
+		avgPwritevMs, maxPwritevMs, pwritevPercent,
 		memStats.NumGC, float64(memStats.PauseTotalNs)/1e6,
 		float64(memStats.Alloc)/1024/1024)
 }

@@ -156,6 +156,9 @@ type FileWriter struct {
 
 	// Mutex for rotation operations (only held during rotation)
 	rotationMu sync.Mutex
+
+	// Last Pwritev duration (for metrics tracking)
+	lastPwritevDuration atomic.Int64 // Nanoseconds
 }
 
 // NewFileWriter creates a new FileWriter with the given configuration
@@ -302,7 +305,14 @@ func (fw *FileWriter) WriteVectored(buffers [][]byte) (int, error) {
 	offset := fw.fileOffset.Load()
 
 	// Write using vectored I/O at specific offset (Linux uses fd for Pwritev)
+	// Track ONLY the Pwritev syscall time (pure disk I/O)
+	pwritevStart := time.Now()
 	n, err := writevAlignedWithOffset(fw.fd, buffers, offset)
+	pwritevDuration := time.Since(pwritevStart)
+
+	// Store Pwritev duration for metrics (even on error, to track syscall time)
+	fw.lastPwritevDuration.Store(pwritevDuration.Nanoseconds())
+
 	if err != nil {
 		return n, err
 	}
@@ -335,4 +345,10 @@ func (fw *FileWriter) Close() error {
 	}
 
 	return firstErr
+}
+
+// GetLastPwritevDuration returns the duration of the last Pwritev syscall
+// This measures pure disk I/O time, excluding rotation checks and other overhead
+func (fw *FileWriter) GetLastPwritevDuration() time.Duration {
+	return time.Duration(fw.lastPwritevDuration.Load())
 }

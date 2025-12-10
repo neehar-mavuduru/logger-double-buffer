@@ -23,27 +23,27 @@ var (
 func main() {
 	// Configuration
 	var (
-		duration       = flag.Duration("duration", 10*time.Minute, "Test duration")
-		bufferMB       = flag.Int("buffer-mb", 64, "Buffer size in MB")
-		numShards      = flag.Int("shards", 8, "Number of shards")
-		flushInterval  = flag.Duration("flush-interval", 10*time.Second, "Flush interval")
+		duration         = flag.Duration("duration", 10*time.Minute, "Test duration")
+		bufferMB         = flag.Int("buffer-mb", 64, "Buffer size in MB")
+		numShards        = flag.Int("shards", 8, "Number of shards")
+		flushInterval    = flag.Duration("flush-interval", 10*time.Second, "Flush interval")
 		rotationInterval = flag.Duration("rotation-interval", 24*time.Hour, "File rotation interval (0 to disable)")
-		logDir         = flag.String("log-dir", "logs", "Log directory")
-		
+		logDir           = flag.String("log-dir", "logs", "Log directory")
+
 		// Event configurations
-		event1Name      = flag.String("event1-name", "event1", "Event1 name")
-		event1RPS       = flag.Int("event1-rps", 350, "Event1 RPS")
-		event1Threads   = flag.Int("event1-threads", 35, "Event1 threads")
-		
-		event2Name      = flag.String("event2-name", "event2", "Event2 name")
-		event2RPS       = flag.Int("event2-rps", 350, "Event2 RPS")
-		event2Threads   = flag.Int("event2-threads", 35, "Event2 threads")
-		
-		event3Name      = flag.String("event3-name", "event3", "Event3 name")
-		event3RPS       = flag.Int("event3-rps", 300, "Event3 RPS")
-		event3Threads   = flag.Int("event3-threads", 30, "Event3 threads")
-		
-		logSizeKB       = flag.Int("log-size-kb", 300, "Log size in KB")
+		event1Name    = flag.String("event1-name", "event1", "Event1 name")
+		event1RPS     = flag.Int("event1-rps", 350, "Event1 RPS")
+		event1Threads = flag.Int("event1-threads", 35, "Event1 threads")
+
+		event2Name    = flag.String("event2-name", "event2", "Event2 name")
+		event2RPS     = flag.Int("event2-rps", 350, "Event2 RPS")
+		event2Threads = flag.Int("event2-threads", 35, "Event2 threads")
+
+		event3Name    = flag.String("event3-name", "event3", "Event3 name")
+		event3RPS     = flag.Int("event3-rps", 300, "Event3 RPS")
+		event3Threads = flag.Int("event3-threads", 30, "Event3 threads")
+
+		logSizeKB = flag.Int("log-size-kb", 300, "Log size in KB")
 	)
 	flag.Parse()
 
@@ -54,13 +54,13 @@ func main() {
 
 	// Create single LoggerManager for all events
 	config := asynclogger.Config{
-		BufferSize:      *bufferMB * 1024 * 1024,
-		NumShards:       *numShards,
-		FlushInterval:   *flushInterval,
+		BufferSize:       *bufferMB * 1024 * 1024,
+		NumShards:        *numShards,
+		FlushInterval:    *flushInterval,
 		RotationInterval: *rotationInterval,
-		LogFilePath:     fmt.Sprintf("%s/%s.log", *logDir, *event1Name), // Base path, actual files will be event-specific
+		LogFilePath:      fmt.Sprintf("%s/%s.log", *logDir, *event1Name), // Base path, actual files will be event-specific
 	}
-	
+
 	loggerManager, err := asynclogger.NewLoggerManager(config)
 	if err != nil {
 		log.Fatalf("Failed to create logger manager: %v", err)
@@ -214,12 +214,15 @@ func printStats(loggerManager *asynclogger.LoggerManager) {
 	// Get aggregated stats
 	totalLogs, droppedLogs, bytesWritten, flushes, flushErrors, setSwaps := loggerManager.GetStatsSnapshot()
 	flushMetrics := loggerManager.GetAggregatedFlushMetrics()
-	
+
 	avgFlushMs := float64(flushMetrics.AvgFlushDuration.Nanoseconds()) / 1e6
 	maxFlushMs := float64(flushMetrics.MaxFlushDuration.Nanoseconds()) / 1e6
 	avgWriteMs := float64(flushMetrics.AvgWriteDuration.Nanoseconds()) / 1e6
 	maxWriteMs := float64(flushMetrics.MaxWriteDuration.Nanoseconds()) / 1e6
 	writePercent := flushMetrics.WritePercent
+	avgPwritevMs := float64(flushMetrics.AvgPwritevDuration.Nanoseconds()) / 1e6
+	maxPwritevMs := float64(flushMetrics.MaxPwritevDuration.Nanoseconds()) / 1e6
+	pwritevPercent := flushMetrics.PwritevPercent
 
 	dropRate := 0.0
 	if totalLogs > 0 {
@@ -229,11 +232,11 @@ func printStats(loggerManager *asynclogger.LoggerManager) {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	log.Printf("METRICS: Logs: %d Dropped: %d (%.4f%%) | Bytes: %d | Flushes: %d Errors: %d Swaps: %d | AvgFlush: %.2fms MaxFlush: %.2fms | AvgWrite: %.2fms MaxWrite: %.2fms WritePct: %.1f%% | GC: %d cycles %.2fms pause | Mem: %.2fMB",
+	log.Printf("METRICS: Logs: %d Dropped: %d (%.4f%%) | Bytes: %d | Flushes: %d Errors: %d Swaps: %d | AvgFlush: %.2fms MaxFlush: %.2fms | AvgWrite: %.2fms MaxWrite: %.2fms WritePct: %.1f%% | AvgPwritev: %.2fms MaxPwritev: %.2fms PwritevPct: %.1f%% | GC: %d cycles %.2fms pause | Mem: %.2fMB",
 		totalLogs, droppedLogs, dropRate, bytesWritten, flushes, flushErrors, setSwaps,
 		avgFlushMs, maxFlushMs,
 		avgWriteMs, maxWriteMs, writePercent,
+		avgPwritevMs, maxPwritevMs, pwritevPercent,
 		memStats.NumGC, float64(memStats.PauseTotalNs)/1e6,
 		float64(memStats.Alloc)/1024/1024)
 }
-
