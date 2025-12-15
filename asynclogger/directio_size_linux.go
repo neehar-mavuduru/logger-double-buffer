@@ -16,12 +16,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// alignmentSize is the required alignment for O_DIRECT on Linux
-// For ext4 filesystem, this must be 4096 bytes (4KB), not 512 bytes!
-// O_DIRECT requires alignment to filesystem block size, not just sector size
-const alignmentSize = 4096
-
 // alignUp rounds n up to the next multiple of align (power of 2).
+// alignmentSize is already defined in directio_linux.go (shared constant)
 func alignUp(n, align int64) int64 {
 	return (n + align - 1) &^ (align - 1)
 }
@@ -153,11 +149,11 @@ func extractBasePathSize(fullPath string) (dir, baseName string, err error) {
 // Uses fallocate to preallocate files for optimal Direct I/O performance
 type SizeFileWriter struct {
 	// Current file
-	file          *os.File
-	fd            int
-	filePath      string
-	fileOffset    atomic.Int64
-	maxFileSize   int64 // Maximum file size before rotation
+	file        *os.File
+	fd          int
+	filePath    string
+	fileOffset  atomic.Int64
+	maxFileSize int64 // Maximum file size before rotation
 
 	// Next file (for rotation)
 	nextFile     *os.File
@@ -165,9 +161,9 @@ type SizeFileWriter struct {
 	nextFilePath string
 
 	// Configuration
-	baseDir              string
-	baseFileName         string
-	preallocateFileSize  int64 // Size to preallocate using fallocate
+	baseDir             string
+	baseFileName        string
+	preallocateFileSize int64 // Size to preallocate using fallocate
 
 	// Mutex for rotation operations (only held during rotation)
 	rotationMu sync.Mutex
@@ -407,4 +403,3 @@ func (fw *SizeFileWriter) Close() error {
 func (fw *SizeFileWriter) GetLastPwritevDuration() time.Duration {
 	return time.Duration(fw.lastPwritevDuration.Load())
 }
-
