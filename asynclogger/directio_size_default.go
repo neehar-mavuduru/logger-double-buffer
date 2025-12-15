@@ -116,8 +116,12 @@ func NewSizeFileWriter(config SizeConfig) (*SizeFileWriter, error) {
 		return nil, fmt.Errorf("failed to extract base path: %w", err)
 	}
 
+	// Generate timestamped filename for initial file (consistent naming)
+	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	initialPath := filepath.Join(baseDir, fmt.Sprintf("%s_%s.log", baseFileName, timestamp))
+
 	// Open initial file
-	file, initialOffset, err := openDirectIOSize(config.LogFilePath, config.PreallocateFileSize)
+	file, initialOffset, err := openDirectIOSize(initialPath, config.PreallocateFileSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open initial file: %w", err)
 	}
@@ -125,7 +129,7 @@ func NewSizeFileWriter(config SizeConfig) (*SizeFileWriter, error) {
 	fw := &SizeFileWriter{
 		file:                file,
 		fd:                  0, // Not used on non-Linux
-		filePath:            config.LogFilePath,
+		filePath:            initialPath,
 		maxFileSize:         config.MaxFileSize,
 		baseDir:             baseDir,
 		baseFileName:        baseFileName,
