@@ -48,9 +48,12 @@ func openDirectIOSize(path string, preallocateSize int64) (*os.File, int64, erro
 
 	// Preallocate file using fallocate to ensure extents are ready for Direct I/O
 	// This improves write performance by avoiding extent allocation during writes
-	if err := unix.Fallocate(fd, 0, 0, alignedSize); err != nil {
-		syscall.Close(fd)
-		return nil, 0, fmt.Errorf("failed to preallocate file with fallocate: %w", err)
+	// If preallocateSize is 0, skip preallocation (used as fallback)
+	if preallocateSize > 0 {
+		if err := unix.Fallocate(fd, 0, 0, alignedSize); err != nil {
+			syscall.Close(fd)
+			return nil, 0, fmt.Errorf("failed to preallocate file with fallocate: %w", err)
+		}
 	}
 
 	file := os.NewFile(uintptr(fd), path)
@@ -209,43 +212,15 @@ func (fw *SizeFileWriter) rotateIfNeeded() error {
 		return nil
 	}
 
-	// Get current offset
+	// Acquire rotation mutex once (prevents concurrent rotations and ensures atomic checks)
+	fw.rotationMu.Lock()
+	defer fw.rotationMu.Unlock()
+
+	// Get current offset (after acquiring lock to ensure consistency)
 	currentOffset := fw.fileOffset.Load()
-
-	// Check if rotation is needed (current write would exceed max file size)
-	// We check before writing, so if current offset + next write size would exceed, rotate
-	// For simplicity, we rotate when we're at 90% capacity to allow proactive next file creation
-	if currentOffset >= int64(float64(fw.maxFileSize)*0.9) {
-		// Acquire rotation mutex to prevent concurrent rotations
-		fw.rotationMu.Lock()
-		defer fw.rotationMu.Unlock()
-
-		// Double-check after acquiring lock (another goroutine might have rotated)
-		currentOffset = fw.fileOffset.Load()
-		if currentOffset < int64(float64(fw.maxFileSize)*0.9) {
-			return nil
-		}
-
-		// If next file doesn't exist, create it
-		if fw.nextFile == nil {
-			if err := fw.createNextFile(); err != nil {
-				return fmt.Errorf("failed to create next file: %w", err)
-			}
-		}
-	}
 
 	// Check if we've actually exceeded the max file size (need to swap immediately)
 	if currentOffset >= fw.maxFileSize {
-		// Acquire rotation mutex
-		fw.rotationMu.Lock()
-		defer fw.rotationMu.Unlock()
-
-		// Double-check after acquiring lock
-		currentOffset = fw.fileOffset.Load()
-		if currentOffset < fw.maxFileSize {
-			return nil
-		}
-
 		// Ensure next file exists
 		if fw.nextFile == nil {
 			if err := fw.createNextFile(); err != nil {
@@ -257,21 +232,43 @@ func (fw *SizeFileWriter) rotateIfNeeded() error {
 		if err := fw.swapFiles(); err != nil {
 			return fmt.Errorf("failed to swap files: %w", err)
 		}
+		return nil
+	}
+
+	// Check if we're approaching max file size (proactive rotation at 90%)
+	if currentOffset >= int64(float64(fw.maxFileSize)*0.9) {
+		// If next file doesn't exist, create it proactively
+		if fw.nextFile == nil {
+			if err := fw.createNextFile(); err != nil {
+				// Don't fail the write if proactive creation fails - we'll try again next time
+				// This prevents fallocate blocking from causing write failures
+				return nil
+			}
+		}
 	}
 
 	return nil
 }
 
 // createNextFile creates a new file for rotation with preallocation
+// If preallocation fails (e.g., disk full, fallocate timeout), creates file without preallocation
 func (fw *SizeFileWriter) createNextFile() error {
 	// Generate timestamped filename: {baseFileName}_{YYYY-MM-DD_HH-MM-SS}.log
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	nextPath := filepath.Join(fw.baseDir, fmt.Sprintf("%s_%s.log", fw.baseFileName, timestamp))
 
-	// Open new file with preallocation
+	// Try to open new file with preallocation
 	file, initialOffset, err := openDirectIOSize(nextPath, fw.preallocateFileSize)
 	if err != nil {
-		return fmt.Errorf("failed to open next file: %w", err)
+		// If preallocation fails, try creating file without preallocation as fallback
+		// This prevents rotation from failing due to fallocate issues (disk full, timeout, etc.)
+		file, initialOffset, err = openDirectIOSize(nextPath, 0)
+		if err != nil {
+			return fmt.Errorf("failed to open next file (with and without preallocation): %w", err)
+		}
+		// Log warning but continue (file will work, just without preallocation)
+		fmt.Printf("[WARNING] Failed to preallocate %d bytes for %s, continuing without preallocation\n",
+			fw.preallocateFileSize, nextPath)
 	}
 
 	// Store next file details
