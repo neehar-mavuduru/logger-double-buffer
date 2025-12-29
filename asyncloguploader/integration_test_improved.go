@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,77 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// findLogFile finds the actual log file with timestamp pattern
+func findLogFile(t *testing.T, dir, baseName string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Match pattern: baseName_YYYY-MM-DD_HH-MM-SS.log
+		if strings.HasPrefix(name, baseName+"_") && strings.HasSuffix(name, ".log") {
+			return filepath.Join(dir, name)
+		}
+	}
+	return ""
+}
+
+// verifyFileFormat verifies the file format structure
+func verifyFileFormat(t *testing.T, data []byte) {
+	if len(data) < 8 {
+		t.Skip("File too small to verify format")
+		return
+	}
+
+	offset := 0
+	shardCount := 0
+
+	for offset < len(data) {
+		if offset+8 > len(data) {
+			break // Not enough data for header
+		}
+
+		// Read shard header
+		capacity := binary.LittleEndian.Uint32(data[offset : offset+4])
+		validDataBytes := binary.LittleEndian.Uint32(data[offset+4 : offset+8])
+
+		// Verify header values are reasonable
+		assert.Greater(t, capacity, uint32(0), "Invalid capacity at offset %d", offset)
+		assert.LessOrEqual(t, validDataBytes, capacity, "Valid data bytes exceeds capacity at offset %d", offset)
+
+		// Verify data starts immediately after header (no padding)
+		dataStart := offset + 8
+		if dataStart < len(data) {
+			// Check that data section is not all zeros (should contain actual data)
+			hasData := false
+			for i := dataStart; i < dataStart+int(validDataBytes) && i < len(data); i++ {
+				if data[i] != 0 {
+					hasData = true
+					break
+				}
+			}
+			if validDataBytes > 0 {
+				assert.True(t, hasData, "Data section appears empty at offset %d", offset)
+			}
+		}
+
+		// Move to next shard (if any)
+		offset += int(capacity)
+		shardCount++
+
+		if shardCount > 100 {
+			break // Prevent infinite loop
+		}
+	}
+
+	assert.Greater(t, shardCount, 0, "No shards found in file")
+}
 
 // forceFlush writes enough data to trigger threshold flush or waits for periodic flush
 func forceFlush(t *testing.T, logger *Logger, numShards int, bufferSize int) {

@@ -24,22 +24,22 @@ var (
 func main() {
 	// Configuration
 	var (
-		numThreads          = flag.Int("threads", 100, "Number of concurrent threads")
-		logSizeKB           = flag.Int("log-size-kb", 300, "Log size in KB")
-		targetRPS           = flag.Int("rps", 1000, "Target requests per second (total across all threads)")
-		duration            = flag.Duration("duration", 10*time.Minute, "Test duration")
-		bufferMB            = flag.Int("buffer-mb", 64, "Buffer size in MB")
-		numShards           = flag.Int("shards", 8, "Number of shards")
-		flushInterval       = flag.Duration("flush-interval", 10*time.Second, "Flush interval")
-		flushTimeout        = flag.Duration("flush-timeout", 10*time.Millisecond, "Flush timeout (write completion wait)")
-		maxFileSizeGB       = flag.Int("max-file-size-gb", 0, "Maximum file size in GB before rotation (0 to disable)")
+		numThreads            = flag.Int("threads", 100, "Number of concurrent threads")
+		logSizeKB             = flag.Int("log-size-kb", 300, "Log size in KB")
+		targetRPS             = flag.Int("rps", 1000, "Target requests per second (total across all threads)")
+		duration              = flag.Duration("duration", 10*time.Minute, "Test duration")
+		bufferMB              = flag.Int("buffer-mb", 64, "Buffer size in MB")
+		numShards             = flag.Int("shards", 8, "Number of shards")
+		flushInterval         = flag.Duration("flush-interval", 10*time.Second, "Flush interval")
+		flushTimeout          = flag.Duration("flush-timeout", 10*time.Millisecond, "Flush timeout (write completion wait)")
+		maxFileSizeGB         = flag.Int("max-file-size-gb", 0, "Maximum file size in GB before rotation (0 to disable)")
 		preallocateFileSizeGB = flag.Int("preallocate-size-gb", 0, "Preallocate file size in GB (0 to use max-file-size-gb)")
-		logDir              = flag.String("log-dir", "logs", "Log directory")
-		useEvents           = flag.Bool("use-events", false, "Use LoggerManager with event-based logging")
-		numEvents           = flag.Int("num-events", 3, "Number of events (for event-based logging)")
-		gcsBucket           = flag.String("gcs-bucket", "", "GCS bucket name for uploads (empty to disable)")
-		gcsPrefix           = flag.String("gcs-prefix", "", "GCS object prefix (e.g., 'logs/event1/')")
-		gcsChunkSizeMB      = flag.Int("gcs-chunk-mb", 32, "GCS upload chunk size in MB")
+		logDir                = flag.String("log-dir", "logs", "Log directory")
+		useEvents             = flag.Bool("use-events", false, "Use LoggerManager with event-based logging")
+		numEvents             = flag.Int("num-events", 3, "Number of events (for event-based logging)")
+		gcsBucket             = flag.String("gcs-bucket", "", "GCS bucket name for uploads (empty to disable)")
+		gcsPrefix             = flag.String("gcs-prefix", "", "GCS object prefix (e.g., 'logs/event1/')")
+		gcsChunkSizeMB        = flag.Int("gcs-chunk-mb", 32, "GCS upload chunk size in MB")
 	)
 	flag.Parse()
 
@@ -64,7 +64,7 @@ func main() {
 		uploaderConfig.ChunkSize = *gcsChunkSizeMB * 1024 * 1024
 
 		var err error
-		uploader, err = asyncloguploader.New(uploaderConfig)
+		uploader, err = asyncloguploader.NewUploader(uploaderConfig)
 		if err != nil {
 			log.Fatalf("Failed to create GCS uploader: %v", err)
 		}
@@ -159,7 +159,7 @@ func main() {
 			case <-ticker.C:
 				var totalLogs, droppedLogs, bytesWritten, flushes, flushErrors int64
 				var flushMetrics asyncloguploader.FlushMetrics
-				
+
 				if *useEvents {
 					totalLogs, droppedLogs, bytesWritten, flushes, flushErrors, _ = loggerManager.GetAggregatedStats()
 					flushMetrics = loggerManager.GetAggregatedFlushMetrics()
@@ -172,8 +172,8 @@ func main() {
 				runtime.ReadMemStats(&m)
 
 				dropRate := 0.0
-				if stats.TotalLogs > 0 {
-					dropRate = float64(stats.DroppedLogs) / float64(stats.TotalLogs) * 100.0
+				if totalLogs > 0 {
+					dropRate = float64(droppedLogs) / float64(totalLogs) * 100.0
 				}
 
 				writePct := 0.0
@@ -274,4 +274,3 @@ func main() {
 		log.Printf("  GCS Upload Bytes: %d", uploadStats.TotalBytes)
 	}
 }
-
