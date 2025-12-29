@@ -12,6 +12,11 @@ bash scripts/verify_vm_prerequisites.sh
 - ✓ Linux OS
 - ✓ 50GB+ disk space
 - ✓ 4GB+ RAM
+- ✓ `top` command (for resource monitoring)
+
+**Optional:**
+- ⚠ `iostat` (for detailed disk I/O - not critical, fallback available)
+- ⚠ GCS: On GCP VMs, default service account credentials are used automatically
 
 ## Quick Test Commands
 

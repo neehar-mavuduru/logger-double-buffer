@@ -183,14 +183,31 @@ RESOURCE_FILE="$RESULTS_DIR/resource_timeline_${TIMESTAMP}.csv"
         MEM_USED=$(free -m | awk '/^Mem:/ {print $3}')
         MEM_PCT=$(awk "BEGIN {printf \"%.2f\", ($MEM_USED/$MEM_TOTAL)*100}")
         
-        # Get disk I/O (if iostat available, else 0)
+        # Get disk I/O (if iostat available, use it; otherwise use /proc/diskstats)
         if command -v iostat >/dev/null 2>&1; then
             DISK_STATS=$(iostat -x 1 1 | awk '/^[a-z]/ {if (NR>1) print $6,$7}' | tail -1)
             DISK_READ=$(echo "$DISK_STATS" | awk '{print $1/1024}')  # Convert to MB
             DISK_WRITE=$(echo "$DISK_STATS" | awk '{print $2/1024}')  # Convert to MB
         else
-            DISK_READ=0
-            DISK_WRITE=0
+            # Fallback: Use /proc/diskstats for basic disk I/O metrics
+            # Read sectors (sector 5) and write sectors (sector 9) from first disk
+            if [ -f /proc/diskstats ]; then
+                # Get first non-loopback disk
+                DISK_STATS=$(grep -v "loop\|ram" /proc/diskstats | head -1)
+                if [ -n "$DISK_STATS" ]; then
+                    # Sectors are typically 512 bytes, convert to MB
+                    READ_SECTORS=$(echo "$DISK_STATS" | awk '{print $6}')
+                    WRITE_SECTORS=$(echo "$DISK_STATS" | awk '{print $10}')
+                    DISK_READ=$(awk "BEGIN {printf \"%.2f\", $READ_SECTORS * 512 / 1024 / 1024}")
+                    DISK_WRITE=$(awk "BEGIN {printf \"%.2f\", $WRITE_SECTORS * 512 / 1024 / 1024}")
+                else
+                    DISK_READ=0
+                    DISK_WRITE=0
+                fi
+            else
+                DISK_READ=0
+                DISK_WRITE=0
+            fi
         fi
         
         echo "$TIMESTAMP_NOW,$CPU,$MEM_USED,$MEM_PCT,$DISK_READ,$DISK_WRITE"

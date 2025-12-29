@@ -118,15 +118,20 @@ echo ""
 
 # Check optional commands
 echo -e "${CYAN}Checking optional commands...${NC}"
-OPTIONAL_COMMANDS=("iostat" "top")
-for cmd in "${OPTIONAL_COMMANDS[@]}"; do
-    if command -v "$cmd" >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ $cmd found (for resource monitoring)${NC}"
-    else
-        echo -e "${YELLOW}⚠ $cmd not found (resource monitoring may be limited)${NC}"
-        WARNINGS=$((WARNINGS + 1))
-    fi
-done
+if command -v iostat >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ iostat found (for detailed disk I/O monitoring)${NC}"
+else
+    echo -e "${YELLOW}⚠ iostat not found (disk I/O monitoring will use basic metrics)${NC}"
+    echo -e "${YELLOW}  Install with: sudo apt-get install sysstat (Debian/Ubuntu) or sudo yum install sysstat (RHEL/CentOS)${NC}"
+    echo -e "${YELLOW}  Not critical - test will still run, but disk I/O metrics may be limited${NC}"
+fi
+
+if command -v top >/dev/null 2>&1; then
+    echo -e "${GREEN}✓ top found (for CPU/memory monitoring)${NC}"
+else
+    echo -e "${RED}✗ top not found (required for resource monitoring)${NC}"
+    ERRORS=$((ERRORS + 1))
+fi
 echo ""
 
 # Check GCS credentials (if GCS upload will be used)
@@ -140,8 +145,17 @@ if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
     fi
 elif [ -n "${GOOGLE_CLOUD_PROJECT:-}" ]; then
     echo -e "${GREEN}✓ GCS project set: $GOOGLE_CLOUD_PROJECT${NC}"
+elif command -v gcloud >/dev/null 2>&1; then
+    # Check if running on GCP VM with default service account
+    if gcloud compute instances describe "$(hostname)" --zone="$(curl -s http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google' | cut -d/ -f4)" --format="get(serviceAccounts[].email)" 2>/dev/null | grep -q "@.*\.gserviceaccount\.com"; then
+        echo -e "${GREEN}✓ Running on GCP VM with default service account (GCS access enabled)${NC}"
+    else
+        echo -e "${YELLOW}⚠ GCS credentials not configured (GCS upload will be disabled)${NC}"
+        echo -e "${YELLOW}  Note: On GCP VMs, default service account credentials are used automatically${NC}"
+    fi
 else
     echo -e "${YELLOW}⚠ GCS credentials not configured (GCS upload will be disabled)${NC}"
+    echo -e "${YELLOW}  Note: On GCP VMs, default service account credentials are used automatically${NC}"
 fi
 echo ""
 
