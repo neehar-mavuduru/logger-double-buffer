@@ -260,6 +260,12 @@ func main() {
 					}
 				}
 
+				// Final check before write - don't start writes if we're past deadline
+				now = time.Now()
+				if !now.Before(endTime) {
+					break // Test duration expired
+				}
+
 				// Generate unique data for each write
 				data := make([]byte, logSizeBytes)
 				copy(data, logData)
@@ -285,6 +291,13 @@ func main() {
 
 				// Calculate next write time
 				nextWrite = nextWrite.Add(intervalPerThread)
+
+				// Check if we've exceeded endTime after the write
+				// This prevents continuing the loop if we're past the deadline
+				now = time.Now()
+				if !now.Before(endTime) {
+					break // Test duration expired
+				}
 			}
 
 			if threadID == 0 {
