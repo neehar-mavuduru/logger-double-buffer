@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -95,14 +96,8 @@ func main() {
 			log.Fatalf("Failed to create logger manager: %v", err)
 		}
 		log.Printf("LoggerManager initialized successfully")
-		defer func() {
-			log.Printf("Closing logger manager...")
-			if err := loggerManager.Close(); err != nil {
-				log.Printf("Error closing logger manager: %v", err)
-			} else {
-				log.Printf("Logger manager closed successfully")
-			}
-		}()
+		// Note: Close() is called explicitly after test completes, not in defer
+		// This ensures we can wait for uploads before closing
 	} else {
 		// Use single Logger
 		config := asyncloguploader.DefaultConfig(fmt.Sprintf("%s/test.log", *logDir))
@@ -119,14 +114,8 @@ func main() {
 			log.Fatalf("Failed to create logger: %v", err)
 		}
 		log.Printf("Logger initialized successfully")
-		defer func() {
-			log.Printf("Closing logger...")
-			if err := logger.Close(); err != nil {
-				log.Printf("Error closing logger: %v", err)
-			} else {
-				log.Printf("Logger closed successfully")
-			}
-		}()
+		// Note: Close() is called explicitly after test completes, not in defer
+		// This ensures we can wait for uploads before closing
 	}
 
 	// Calculate rate per thread
@@ -227,6 +216,10 @@ func main() {
 		eventNames[i] = fmt.Sprintf("event%d", i+1)
 	}
 
+	// Create a context with timeout to ensure test stops
+	ctx, cancel := context.WithTimeout(context.Background(), *duration)
+	defer cancel()
+
 	log.Printf("Starting %d worker threads...", *numThreads)
 	for i := 0; i < *numThreads; i++ {
 		wg.Add(1)
@@ -236,82 +229,79 @@ func main() {
 			// Each thread maintains its own rate limiter
 			nextWrite := time.Now()
 			writeCount := int64(0)
+			ticker := time.NewTicker(intervalPerThread)
+			defer ticker.Stop()
 
 			for {
-				now := time.Now()
-				if !now.Before(endTime) {
-					break // Test duration expired
-				}
-
-				if now.Before(nextWrite) {
-					sleepDuration := nextWrite.Sub(now)
-					// Cap sleep duration to not exceed endTime
-					timeUntilEnd := endTime.Sub(now)
-					if sleepDuration > timeUntilEnd {
-						sleepDuration = timeUntilEnd
+				select {
+				case <-ctx.Done():
+					// Context cancelled (timeout reached)
+					if threadID == 0 {
+						log.Printf("Thread %d stopped due to timeout: %d writes", threadID, writeCount)
 					}
-					if sleepDuration > 0 {
-						time.Sleep(sleepDuration)
+					return
+
+				case <-ticker.C:
+					// Rate limiter ticked
+					now := time.Now()
+					if now.After(endTime) {
+						return // Test duration expired
 					}
-					// Re-check endTime after sleep
-					now = time.Now()
-					if !now.Before(endTime) {
-						break // Test duration expired
+
+					// Generate unique data for each write
+					data := make([]byte, logSizeBytes)
+					copy(data, logData)
+					// Add thread ID and timestamp to make each log unique
+					data[0] = byte(threadID)
+					binary.LittleEndian.PutUint64(data[1:9], uint64(time.Now().UnixNano()))
+
+					if *useEvents {
+						// Round-robin through events
+						eventName := eventNames[threadID%*numEvents]
+						loggerManager.LogBytesWithEvent(eventName, data)
+					} else {
+						logger.LogBytes(data)
 					}
+
+					atomic.AddInt64(&totalLogs, 1)
+					writeCount++
+
+					// Debug: Log first few writes from thread 0
+					if threadID == 0 && writeCount <= 3 {
+						log.Printf("[DEBUG] Thread 0: Write #%d completed", writeCount)
+					}
+
+					// Update next write time
+					nextWrite = nextWrite.Add(intervalPerThread)
 				}
-
-				// Final check before write - don't start writes if we're past deadline
-				now = time.Now()
-				if !now.Before(endTime) {
-					break // Test duration expired
-				}
-
-				// Generate unique data for each write
-				data := make([]byte, logSizeBytes)
-				copy(data, logData)
-				// Add thread ID and timestamp to make each log unique
-				data[0] = byte(threadID)
-				binary.LittleEndian.PutUint64(data[1:9], uint64(time.Now().UnixNano()))
-
-				if *useEvents {
-					// Round-robin through events
-					eventName := eventNames[threadID%*numEvents]
-					loggerManager.LogBytesWithEvent(eventName, data)
-				} else {
-					logger.LogBytes(data)
-				}
-
-				atomic.AddInt64(&totalLogs, 1)
-				writeCount++
-
-				// Debug: Log first few writes from thread 0
-				if threadID == 0 && writeCount <= 3 {
-					log.Printf("[DEBUG] Thread 0: Write #%d completed", writeCount)
-				}
-
-				// Calculate next write time
-				nextWrite = nextWrite.Add(intervalPerThread)
-
-				// Check if we've exceeded endTime after the write
-				// This prevents continuing the loop if we're past the deadline
-				now = time.Now()
-				if !now.Before(endTime) {
-					break // Test duration expired
-				}
-			}
-
-			if threadID == 0 {
-				log.Printf("Thread %d completed: %d writes", threadID, writeCount)
 			}
 		}(i)
 	}
 
 	log.Printf("All worker threads started")
 
-	// Wait for all threads to complete
+	// Wait for all threads to complete OR timeout
 	log.Printf("Waiting for all worker threads to complete...")
-	wg.Wait()
-	log.Printf("All worker threads completed")
+
+	// Use a channel to signal completion
+	doneChan := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneChan)
+	}()
+
+	// Wait for either completion or timeout
+	select {
+	case <-doneChan:
+		log.Printf("All worker threads completed")
+	case <-ctx.Done():
+		log.Printf("[WARNING] Test timeout reached, forcing shutdown...")
+		// Cancel context to stop all threads
+		cancel()
+		// Give threads a moment to exit
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	close(done)
 
 	// Final statistics
@@ -330,10 +320,27 @@ func main() {
 	log.Printf("  Flushes: %d", finalFlushes)
 	log.Printf("  Flush Errors: %d", finalFlushErrors)
 
+	// Close logger to flush remaining data and send final file to upload channel
+	log.Printf("Closing logger(s)...")
+	if *useEvents {
+		if err := loggerManager.Close(); err != nil {
+			log.Printf("[ERROR] Error closing logger manager: %v", err)
+		} else {
+			log.Printf("Logger manager closed successfully")
+		}
+	} else {
+		if err := logger.Close(); err != nil {
+			log.Printf("[ERROR] Error closing logger: %v", err)
+		} else {
+			log.Printf("Logger closed successfully")
+		}
+	}
+
 	if uploader != nil {
-		// Give uploader a moment to process any pending files
-		log.Printf("Waiting for uploader to finish processing...")
-		time.Sleep(2 * time.Second)
+		// Give uploader time to process all pending files (including final file from Close())
+		log.Printf("Waiting for uploader to finish processing all files...")
+		// Wait longer to ensure all files are uploaded
+		time.Sleep(5 * time.Second)
 
 		uploadStats := uploader.GetStats()
 		log.Printf("  GCS Uploads: %d", uploadStats.Successful)
