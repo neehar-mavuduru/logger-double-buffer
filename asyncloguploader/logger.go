@@ -138,7 +138,9 @@ func (l *Logger) LogBytes(data []byte) {
 		return
 	}
 
-	timeout := time.NewTimer(10 * time.Millisecond)
+	// Increase timeout to 50ms to allow flush operations to complete
+	// Under high load, flushes can take longer, and we want to avoid dropping logs
+	timeout := time.NewTimer(50 * time.Millisecond)
 	defer timeout.Stop()
 
 	select {
@@ -165,12 +167,17 @@ func (l *Logger) LogBytes(data []byte) {
 		// Still full - trigger swap (only one thread will succeed per shard)
 		if needsFlush {
 			shard.trySwap()
+			// After swap, readyForFlush is still true (inactive buffer needs flush)
+			// But the new active buffer is empty and should accept writes
 		}
 
-		// Re-check 2: After swap, try writing again
+		// Re-check 2: After swap, try writing again to the new active buffer
+		// The Write() method now checks buffer space before readyForFlush,
+		// so it will succeed if the new buffer has space
 		n, _ = shard.Write(data)
 		if n == 0 {
-			// Still failed after swap - drop log
+			// Still failed after swap - this means both buffers are truly full
+			// (very rare, but possible under extreme load)
 			l.stats.DroppedLogs.Add(1)
 		} else {
 			// Success after swap!

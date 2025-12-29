@@ -136,11 +136,6 @@ func (s *Shard) Write(p []byte) (n int, needsFlush bool) {
 		return 0, false
 	}
 
-	// Check if shard is already marked for flush (both buffers full)
-	if s.readyForFlush.Load() {
-		return 0, true
-	}
-
 	// Get active buffer
 	activeBufPtr := s.activeBuffer.Load()
 	if activeBufPtr == nil {
@@ -164,11 +159,20 @@ func (s *Shard) Write(p []byte) (n int, needsFlush bool) {
 	currentOffset := offset.Load()
 	newOffset := currentOffset + int32(totalSize)
 
-	// Check if we have enough space
+	// Check if we have enough space in the active buffer
+	// IMPORTANT: Check buffer space BEFORE checking readyForFlush
+	// This allows writes to the new active buffer after swap, even if readyForFlush is still true
 	if newOffset >= s.capacity {
+		// Active buffer is full - mark for flush
 		s.readyForFlush.Store(true)
 		return 0, true
 	}
+
+	// If readyForFlush is true but active buffer has space, it means:
+	// - A swap just happened and the inactive buffer is being flushed
+	// - The new active buffer is empty and ready for writes
+	// - We should allow writes to proceed
+	// Note: readyForFlush only prevents writes when BOTH buffers are full
 
 	// Try to atomically update the offset (CAS)
 	if !offset.CompareAndSwap(currentOffset, newOffset) {
