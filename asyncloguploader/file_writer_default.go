@@ -121,16 +121,18 @@ func (fw *SizeFileWriter) GetLastPwritevDuration() time.Duration {
 func (fw *SizeFileWriter) Close() error {
 	var firstErr error
 
-	if fw.nextFile != nil {
-		if err := fw.nextFile.Close(); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+	// If nextFile exists, it means rotation was in progress
+	// We need to complete the rotation: swap files, then close both
+	if fw.nextFile != nil && fw.file != nil {
+		// Complete the rotation by swapping files
+		// This will send the current file to upload channel
+		if err := fw.swapFiles(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("failed to complete rotation during close: %w", err)
 		}
-		fw.nextFile = nil
-		fw.nextFilePath = ""
+		// After swap, nextFile becomes current file, and old current file is uploaded
 	}
 
+	// Now close the current file (which might be the swapped file or original current file)
 	if fw.file != nil {
 		// Check if file has data (offset > 0 means data was written)
 		hasData := fw.fileOffset.Load() > 0
@@ -162,6 +164,17 @@ func (fw *SizeFileWriter) Close() error {
 		}
 
 		fw.file = nil
+	}
+
+	// Clean up nextFile if it still exists (shouldn't happen after swap, but be safe)
+	if fw.nextFile != nil {
+		if err := fw.nextFile.Close(); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+		fw.nextFile = nil
+		fw.nextFilePath = ""
 	}
 
 	return firstErr

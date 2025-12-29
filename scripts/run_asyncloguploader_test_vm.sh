@@ -315,7 +315,9 @@ if [ -f "$TEST_LOG" ]; then
     
     # Extract flush errors if any
     FLUSH_ERROR_COUNT=$(grep -c "FLUSH_ERROR" "$TEST_LOG" 2>/dev/null || echo "0")
-    if [ "$FLUSH_ERROR_COUNT" -gt 0 ]; then
+    # Remove any newlines/whitespace from the count
+    FLUSH_ERROR_COUNT=$(echo "$FLUSH_ERROR_COUNT" | tr -d '\n\r ')
+    if [ -n "$FLUSH_ERROR_COUNT" ] && [ "$FLUSH_ERROR_COUNT" -gt 0 ] 2>/dev/null; then
         echo -e "${YELLOW}⚠ Flush Errors: $FLUSH_ERROR_COUNT${NC}"
         grep "FLUSH_ERROR" "$TEST_LOG" | tail -5
         echo ""

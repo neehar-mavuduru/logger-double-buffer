@@ -325,7 +325,7 @@ func (l *Logger) flushShards(readyShards []*Shard) {
 	// Single batched write for all shards - track timing
 	if len(shardBuffers) > 0 {
 		writeStart := time.Now()
-		n, err := l.fileWriter.WriteVectored(shardBuffers)
+		_, err := l.fileWriter.WriteVectored(shardBuffers)
 		writeDuration := time.Since(writeStart)
 
 		// Track write duration (includes rotation checks)
@@ -372,7 +372,8 @@ func (l *Logger) flushShards(readyShards []*Shard) {
 				len(shardBuffers), totalBytes, err, writeDuration)
 			// Continue processing - reset shards even on error to prevent deadlock
 		} else {
-			l.stats.BytesWritten.Add(int64(n))
+			// Note: BytesWritten is already counted when data is written to buffers in LogBytes()
+			// We don't count again here to avoid double-counting
 			l.stats.Flushes.Add(1)
 		}
 	}
