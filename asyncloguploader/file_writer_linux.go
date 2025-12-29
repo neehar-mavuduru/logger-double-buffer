@@ -133,16 +133,44 @@ func (fw *SizeFileWriter) Close() error {
 		if err := fw.nextFile.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		fw.nextFile = nil
+		fw.nextFd = 0
+		fw.nextFilePath = ""
 	}
 
-	// Sync and close current file
+	// Sync and close current file, and send to upload channel if it has data
 	if fw.file != nil {
-		if err := unix.Fsync(fw.fd); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("failed to sync file: %w", err)
+		// Check if file has data (offset > 0 means data was written)
+		hasData := fw.fileOffset.Load() > 0
+
+		// Store file path before closing (for upload)
+		completedFilePath := fw.filePath
+
+		// Sync file to ensure all data is written before closing
+		if hasData && fw.fd > 0 {
+			if err := unix.Fsync(fw.fd); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to sync file: %w", err)
+			}
 		}
+
+		// Close current file
 		if err := fw.file.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+
+		// Send completed file to upload channel (non-blocking) if it has data
+		if hasData && fw.completedFileChan != nil {
+			select {
+			case fw.completedFileChan <- completedFilePath:
+				// Successfully sent to channel
+			default:
+				// Channel full - log warning but don't block close
+				fmt.Printf("[WARNING] Upload channel full, skipping upload for %s\n", completedFilePath)
+			}
+		}
+
+		fw.file = nil
+		fw.fd = 0
 	}
 
 	return firstErr

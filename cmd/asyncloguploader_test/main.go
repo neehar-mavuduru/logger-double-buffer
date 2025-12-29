@@ -94,7 +94,15 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create logger manager: %v", err)
 		}
-		defer loggerManager.Close()
+		log.Printf("LoggerManager initialized successfully")
+		defer func() {
+			log.Printf("Closing logger manager...")
+			if err := loggerManager.Close(); err != nil {
+				log.Printf("Error closing logger manager: %v", err)
+			} else {
+				log.Printf("Logger manager closed successfully")
+			}
+		}()
 	} else {
 		// Use single Logger
 		config := asyncloguploader.DefaultConfig(fmt.Sprintf("%s/test.log", *logDir))
@@ -110,7 +118,15 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create logger: %v", err)
 		}
-		defer logger.Close()
+		log.Printf("Logger initialized successfully")
+		defer func() {
+			log.Printf("Closing logger...")
+			if err := logger.Close(); err != nil {
+				log.Printf("Error closing logger: %v", err)
+			} else {
+				log.Printf("Logger closed successfully")
+			}
+		}()
 	}
 
 	// Calculate rate per thread
@@ -204,12 +220,14 @@ func main() {
 	// Start load generation
 	startTime := time.Now()
 	endTime := startTime.Add(*duration)
+	log.Printf("Test start time: %v, end time: %v", startTime, endTime)
 
 	eventNames := make([]string, *numEvents)
 	for i := 0; i < *numEvents; i++ {
 		eventNames[i] = fmt.Sprintf("event%d", i+1)
 	}
 
+	log.Printf("Starting %d worker threads...", *numThreads)
 	for i := 0; i < *numThreads; i++ {
 		wg.Add(1)
 		go func(threadID int) {
@@ -217,11 +235,19 @@ func main() {
 
 			// Each thread maintains its own rate limiter
 			nextWrite := time.Now()
+			writeCount := int64(0)
 
-			for time.Now().Before(endTime) {
+			for {
 				now := time.Now()
+				if !now.Before(endTime) {
+					break // Test duration expired
+				}
+
 				if now.Before(nextWrite) {
-					time.Sleep(nextWrite.Sub(now))
+					sleepDuration := nextWrite.Sub(now)
+					if sleepDuration > 0 {
+						time.Sleep(sleepDuration)
+					}
 				}
 
 				// Generate unique data for each write
@@ -240,15 +266,29 @@ func main() {
 				}
 
 				atomic.AddInt64(&totalLogs, 1)
+				writeCount++
+
+				// Debug: Log first few writes from thread 0
+				if threadID == 0 && writeCount <= 3 {
+					log.Printf("[DEBUG] Thread 0: Write #%d completed", writeCount)
+				}
 
 				// Calculate next write time
 				nextWrite = nextWrite.Add(intervalPerThread)
 			}
+
+			if threadID == 0 {
+				log.Printf("Thread %d completed: %d writes", threadID, writeCount)
+			}
 		}(i)
 	}
 
+	log.Printf("All worker threads started")
+
 	// Wait for all threads to complete
+	log.Printf("Waiting for all worker threads to complete...")
 	wg.Wait()
+	log.Printf("All worker threads completed")
 	close(done)
 
 	// Final statistics
@@ -268,9 +308,17 @@ func main() {
 	log.Printf("  Flush Errors: %d", finalFlushErrors)
 
 	if uploader != nil {
+		// Give uploader a moment to process any pending files
+		log.Printf("Waiting for uploader to finish processing...")
+		time.Sleep(2 * time.Second)
+
 		uploadStats := uploader.GetStats()
 		log.Printf("  GCS Uploads: %d", uploadStats.Successful)
 		log.Printf("  GCS Upload Errors: %d", uploadStats.Failed)
 		log.Printf("  GCS Upload Bytes: %d", uploadStats.TotalBytes)
+		if uploadStats.TotalFiles > 0 {
+			log.Printf("  GCS Total Files Processed: %d", uploadStats.TotalFiles)
+			log.Printf("  GCS Last Upload Time: %v", uploadStats.LastUploadTime)
+		}
 	}
 }

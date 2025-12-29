@@ -520,8 +520,19 @@ func (l *Logger) Close() error {
 	// Wait for any ongoing flush to complete by acquiring and releasing the semaphore
 	// This ensures no flush is in progress before we swap buffers
 	// We acquire and immediately release to ensure the flush worker has finished
-	l.semaphore <- struct{}{}
-	<-l.semaphore
+	// Use a timeout to prevent deadlock if flush worker is stuck
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
+
+	select {
+	case l.semaphore <- struct{}{}:
+		// Successfully acquired semaphore - flush worker has finished
+		<-l.semaphore
+	case <-timeout.C:
+		// Timeout: flush worker might be stuck, but we'll proceed anyway
+		// This prevents deadlock during shutdown
+		fmt.Printf("[WARNING] Timeout waiting for flush semaphore during Close(), proceeding anyway\n")
+	}
 
 	// Now it's safe to prepare shards for final flush
 	// Get all shards with data, not just ready ones (threshold doesn't matter during close)
