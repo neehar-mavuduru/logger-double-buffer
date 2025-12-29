@@ -245,8 +245,18 @@ func main() {
 
 				if now.Before(nextWrite) {
 					sleepDuration := nextWrite.Sub(now)
+					// Cap sleep duration to not exceed endTime
+					timeUntilEnd := endTime.Sub(now)
+					if sleepDuration > timeUntilEnd {
+						sleepDuration = timeUntilEnd
+					}
 					if sleepDuration > 0 {
 						time.Sleep(sleepDuration)
+					}
+					// Re-check endTime after sleep
+					now = time.Now()
+					if !now.Before(endTime) {
+						break // Test duration expired
 					}
 				}
 
