@@ -47,3 +47,9 @@ echo "  3. git push -u origin main"
 echo ""
 echo "Or use the push script: bash scripts/push_to_remote.sh <repo-url>"
 
+
+
+
+
+
+

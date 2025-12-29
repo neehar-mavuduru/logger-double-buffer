@@ -210,3 +210,9 @@ func printStats(loggerManager *asynclogger.LoggerManager, logger *asynclogger.Lo
 		float64(memStats.Alloc)/1024/1024)
 }
 
+
+
+
+
+
+

@@ -342,3 +342,9 @@ if [ "$ROTATED_FILES" -gt 0 ]; then
     ls -lh "$LOG_DIR"/event*_*.log
 fi
 
+
+
+
+
+
+

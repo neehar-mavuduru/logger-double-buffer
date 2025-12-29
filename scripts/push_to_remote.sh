@@ -93,3 +93,9 @@ echo "  cd logger-double-buffer"
 echo "  bash scripts/setup_gcp_vm.sh  # Install dependencies"
 echo "  bash scripts/run_event_baseline_test.sh  # Run test"
 
+
+
+
+
+
+

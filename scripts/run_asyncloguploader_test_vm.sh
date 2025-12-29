@@ -11,13 +11,13 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}    Direct Logger Test - VM Execution                      ${NC}"
+echo -e "${CYAN}    Async Log Uploader Load Test - VM Execution            ${NC}"
 echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
 echo ""
 
 # Configuration
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-RESULTS_DIR="results/direct_logger_test"
+RESULTS_DIR="results/asyncloguploader_test"
 LOG_DIR="logs"
 DURATION="10m"
 THREADS=100
@@ -26,8 +26,14 @@ TARGET_RPS=1000
 BUFFER_MB=64
 SHARDS=8
 FLUSH_INTERVAL="10s"
+FLUSH_TIMEOUT="10ms"
+MAX_FILE_SIZE_GB=0
+PREALLOCATE_SIZE_GB=0
 USE_EVENTS=false
-EVENT_NAME="test"
+NUM_EVENTS=3
+GCS_BUCKET=""
+GCS_PREFIX=""
+GCS_CHUNK_MB=32
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -52,26 +58,61 @@ while [[ $# -gt 0 ]]; do
             SHARDS="$2"
             shift 2
             ;;
+        --flush-interval)
+            FLUSH_INTERVAL="$2"
+            shift 2
+            ;;
+        --flush-timeout)
+            FLUSH_TIMEOUT="$2"
+            shift 2
+            ;;
+        --max-file-size-gb)
+            MAX_FILE_SIZE_GB="$2"
+            shift 2
+            ;;
+        --preallocate-size-gb)
+            PREALLOCATE_SIZE_GB="$2"
+            shift 2
+            ;;
         --use-events)
             USE_EVENTS=true
             shift
             ;;
-        --event)
-            EVENT_NAME="$2"
+        --num-events)
+            NUM_EVENTS="$2"
+            shift 2
+            ;;
+        --gcs-bucket)
+            GCS_BUCKET="$2"
+            shift 2
+            ;;
+        --gcs-prefix)
+            GCS_PREFIX="$2"
+            shift 2
+            ;;
+        --gcs-chunk-mb)
+            GCS_CHUNK_MB="$2"
             shift 2
             ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --duration DURATION     Test duration (default: 10m)"
-            echo "  --threads THREADS        Number of threads (default: 100)"
-            echo "  --rps RPS                Target RPS (default: 1000)"
-            echo "  --buffer-mb MB           Buffer size in MB (default: 64)"
-            echo "  --shards SHARDS         Number of shards (default: 8)"
-            echo "  --use-events            Use event-based logging"
-            echo "  --event NAME            Event name (default: test)"
-            echo "  --help                  Show this help"
+            echo "  --duration DURATION         Test duration (default: 10m)"
+            echo "  --threads THREADS            Number of threads (default: 100)"
+            echo "  --rps RPS                    Target RPS (default: 1000)"
+            echo "  --buffer-mb MB               Buffer size in MB (default: 64)"
+            echo "  --shards SHARDS              Number of shards (default: 8)"
+            echo "  --flush-interval INTERVAL    Flush interval (default: 10s)"
+            echo "  --flush-timeout TIMEOUT      Flush timeout (default: 10ms)"
+            echo "  --max-file-size-gb GB        Max file size in GB (default: 0 = disabled)"
+            echo "  --preallocate-size-gb GB     Preallocate size in GB (default: 0 = use max-file-size)"
+            echo "  --use-events                 Use event-based logging"
+            echo "  --num-events N               Number of events (default: 3)"
+            echo "  --gcs-bucket BUCKET          GCS bucket name (optional)"
+            echo "  --gcs-prefix PREFIX          GCS object prefix (optional)"
+            echo "  --gcs-chunk-mb MB            GCS chunk size in MB (default: 32)"
+            echo "  --help                       Show this help"
             exit 0
             ;;
         *)
@@ -96,17 +137,16 @@ cleanup() {
         wait "$TEST_PID" 2>/dev/null || true
     fi
     
+    # Kill resource monitor if running
+    if [ -n "${MONITOR_PID:-}" ]; then
+        kill "$MONITOR_PID" 2>/dev/null || true
+        wait "$MONITOR_PID" 2>/dev/null || true
+    fi
+    
     echo -e "${GREEN}✓ Cleanup complete${NC}"
 }
 
 trap cleanup EXIT INT TERM
-
-# Check if port is in use (not needed for direct test, but keeping for consistency)
-check_port() {
-    if lsof -Pi :8585 -sTCP:LISTEN -t >/dev/null 2>&1; then
-        echo -e "${YELLOW}Warning: Port 8585 is in use${NC}"
-    fi
-}
 
 # Cleanup old logs
 cleanup_old_logs() {
@@ -117,7 +157,7 @@ cleanup_old_logs() {
 
 # Build test program
 echo -e "${BLUE}Building test program...${NC}"
-if ! go build -o "$RESULTS_DIR/direct_logger_test" ./cmd/direct_logger_test; then
+if ! go build -o "$RESULTS_DIR/asyncloguploader_test" ./cmd/asyncloguploader_test; then
     echo -e "${RED}✗ Failed to build test program${NC}"
     exit 1
 fi
@@ -163,32 +203,45 @@ echo ""
 
 # Run test
 echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}    Running Direct Logger Test                            ${NC}"
+echo -e "${CYAN}    Running Async Log Uploader Load Test                   ${NC}"
 echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}Configuration:${NC}"
-echo "  Threads:      $THREADS"
-echo "  Log size:     ${LOG_SIZE_KB}KB"
-echo "  Target RPS:   $TARGET_RPS"
-echo "  Duration:     $DURATION"
-echo "  Buffer:       ${BUFFER_MB}MB"
-echo "  Shards:       $SHARDS"
-echo "  Flush Int:    $FLUSH_INTERVAL"
-echo "  Event-based:  $USE_EVENTS"
+echo "  Threads:          $THREADS"
+echo "  Log size:         ${LOG_SIZE_KB}KB"
+echo "  Target RPS:       $TARGET_RPS"
+echo "  Duration:         $DURATION"
+echo "  Buffer:           ${BUFFER_MB}MB"
+echo "  Shards:           $SHARDS"
+echo "  Flush Interval:   $FLUSH_INTERVAL"
+echo "  Flush Timeout:    $FLUSH_TIMEOUT"
+echo "  Max File Size:    ${MAX_FILE_SIZE_GB}GB"
+echo "  Preallocate Size: ${PREALLOCATE_SIZE_GB}GB"
+echo "  Event-based:      $USE_EVENTS"
 if [ "$USE_EVENTS" = true ]; then
-    echo "  Event name:   $EVENT_NAME"
+    echo "  Number of events: $NUM_EVENTS"
+fi
+if [ -n "$GCS_BUCKET" ]; then
+    echo "  GCS Bucket:       $GCS_BUCKET"
+    echo "  GCS Prefix:      $GCS_PREFIX"
+    echo "  GCS Chunk Size:   ${GCS_CHUNK_MB}MB"
 fi
 echo ""
 
 EVENT_FLAG=""
 if [ "$USE_EVENTS" = true ]; then
-    EVENT_FLAG="--use-events --event=$EVENT_NAME"
+    EVENT_FLAG="--use-events --num-events=$NUM_EVENTS"
+fi
+
+GCS_FLAGS=""
+if [ -n "$GCS_BUCKET" ]; then
+    GCS_FLAGS="--gcs-bucket=$GCS_BUCKET --gcs-prefix=$GCS_PREFIX --gcs-chunk-mb=$GCS_CHUNK_MB"
 fi
 
 TEST_LOG="$RESULTS_DIR/test_${TIMESTAMP}.log"
 START_TIME=$(date +%s)
 
 # Run test in background and capture PID
-"$RESULTS_DIR/direct_logger_test" \
+"$RESULTS_DIR/asyncloguploader_test" \
     --threads="$THREADS" \
     --log-size-kb="$LOG_SIZE_KB" \
     --rps="$TARGET_RPS" \
@@ -196,8 +249,12 @@ START_TIME=$(date +%s)
     --buffer-mb="$BUFFER_MB" \
     --shards="$SHARDS" \
     --flush-interval="$FLUSH_INTERVAL" \
+    --flush-timeout="$FLUSH_TIMEOUT" \
+    --max-file-size-gb="$MAX_FILE_SIZE_GB" \
+    --preallocate-size-gb="$PREALLOCATE_SIZE_GB" \
     --log-dir="$LOG_DIR" \
     $EVENT_FLAG \
+    $GCS_FLAGS \
     > "$TEST_LOG" 2>&1 &
 TEST_PID=$!
 
@@ -246,6 +303,11 @@ if [ -f "$TEST_LOG" ]; then
         grep "FLUSH_ERROR" "$TEST_LOG" | tail -5
         echo ""
     fi
+    
+    # Extract final statistics
+    echo -e "${CYAN}Final Statistics:${NC}"
+    grep "Final Statistics:" -A 10 "$TEST_LOG" | tail -10
+    echo ""
 fi
 
 # Summary
@@ -255,10 +317,4 @@ echo "  Resource data: $RESOURCE_FILE"
 echo "  Log files:     $LOG_DIR/"
 echo ""
 echo -e "${GREEN}Test completed at: $(date)${NC}"
-
-
-
-
-
-
 

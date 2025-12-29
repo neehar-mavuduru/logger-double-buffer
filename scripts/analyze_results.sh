@@ -152,3 +152,9 @@ echo "Flush errors:      $FLUSH_ERRORS"
 echo ""
 echo -e "${GREEN}✓ Analysis complete${NC}"
 
+
+
+
+
+
+
