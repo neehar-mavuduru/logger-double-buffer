@@ -80,9 +80,16 @@ func (u *Uploader) Start() {
 
 // Stop stops the uploader service gracefully
 func (u *Uploader) Stop() {
+	// Close channel first to stop accepting new files
 	close(u.uploadChan)
-	u.cancel()
+
+	// Wait for upload worker to finish processing all files in channel
 	u.wg.Wait()
+
+	// Now cancel context (this will cancel any ongoing uploads)
+	u.cancel()
+
+	// Close client
 	u.client.Close()
 }
 
@@ -138,6 +145,13 @@ func (u *Uploader) uploadWorker() {
 
 // uploadFileWithRetry uploads a file with retry logic
 func (u *Uploader) uploadFileWithRetry(filePath string) error {
+	// Get file size BEFORE upload (file will be deleted after successful upload)
+	fileInfo, statErr := os.Stat(filePath)
+	var fileSize int64
+	if statErr == nil {
+		fileSize = fileInfo.Size()
+	}
+
 	var lastErr error
 	for attempt := 0; attempt <= u.config.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -154,11 +168,10 @@ func (u *Uploader) uploadFileWithRetry(filePath string) error {
 		duration := time.Since(start)
 
 		if err == nil {
-			// Success - update stats
-			fileInfo, statErr := os.Stat(filePath)
-			if statErr == nil {
+			// Success - update stats using fileSize we got before upload
+			if statErr == nil && fileSize > 0 {
 				u.statsMu.Lock()
-				u.uploadStats.TotalBytes += fileInfo.Size()
+				u.uploadStats.TotalBytes += fileSize
 				u.uploadStats.TotalDuration += duration
 
 				// Update min/max upload duration
@@ -213,6 +226,9 @@ func (u *Uploader) uploadFile(filePath string) error {
 	if err := u.uploadParallel(u.ctx, u.client, u.config.Bucket, objectName, buf, u.config.ChunkSize); err != nil {
 		return fmt.Errorf("parallel upload failed: %w", err)
 	}
+
+	// Clear buffer reference to help GC (buf will be garbage collected after function returns)
+	buf = nil
 
 	// Delete local file after successful upload
 	if err := os.Remove(filePath); err != nil {
