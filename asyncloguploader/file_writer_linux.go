@@ -147,10 +147,21 @@ func (fw *SizeFileWriter) Close() error {
 		// Store file path before closing (for upload)
 		completedFilePath := fw.filePath
 
+		// Get actual written size
+		actualSize := fw.fileOffset.Load()
+
 		// Sync file to ensure all data is written before closing
 		if hasData && fw.fd > 0 {
 			if err := unix.Fsync(fw.fd); err != nil && firstErr == nil {
 				firstErr = fmt.Errorf("failed to sync file: %w", err)
+			}
+		}
+
+		// Truncate file to actual written size (removes preallocated space)
+		// This is fast for sparse files (metadata-only operation)
+		if hasData && actualSize > 0 && fw.fd > 0 {
+			if err := unix.Ftruncate(fw.fd, actualSize); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("failed to truncate file to actual size: %w", err)
 			}
 		}
 
@@ -273,6 +284,17 @@ func (fw *SizeFileWriter) swapFiles() error {
 	// Sync current file to ensure all data is written
 	if err := unix.Fsync(fw.fd); err != nil {
 		return fmt.Errorf("failed to sync current file: %w", err)
+	}
+
+	// Get actual written size
+	actualSize := fw.fileOffset.Load()
+
+	// Truncate file to actual written size (removes preallocated space)
+	// This is fast for sparse files (metadata-only operation)
+	if actualSize > 0 {
+		if err := unix.Ftruncate(fw.fd, actualSize); err != nil {
+			return fmt.Errorf("failed to truncate file to actual size: %w", err)
+		}
 	}
 
 	// Store current file path before closing (for upload)
