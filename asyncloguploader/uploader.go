@@ -32,12 +32,15 @@ type Uploader struct {
 
 // Stats tracks upload statistics
 type Stats struct {
-	TotalFiles     int64
-	Successful     int64
-	Failed         int64
-	TotalBytes     int64
-	TotalDuration  time.Duration
-	LastUploadTime time.Time
+	TotalFiles        int64
+	Successful        int64
+	Failed            int64
+	TotalBytes        int64
+	TotalDuration     time.Duration
+	LastUploadTime    time.Time
+	MinUploadDuration time.Duration
+	MaxUploadDuration time.Duration
+	AvgUploadDuration time.Duration
 }
 
 // NewUploader creates a new GCS uploader service
@@ -92,7 +95,14 @@ func (u *Uploader) GetUploadChannel() chan<- string {
 func (u *Uploader) GetStats() Stats {
 	u.statsMu.RLock()
 	defer u.statsMu.RUnlock()
-	return u.uploadStats
+
+	// Calculate average upload duration
+	stats := u.uploadStats
+	if stats.Successful > 0 && stats.TotalDuration > 0 {
+		stats.AvgUploadDuration = stats.TotalDuration / time.Duration(stats.Successful)
+	}
+
+	return stats
 }
 
 // uploadWorker reads from channel and uploads files
@@ -104,23 +114,26 @@ func (u *Uploader) uploadWorker() {
 			continue
 		}
 
-		// Upload file with retries
+		log.Printf("[DEBUG] Processing file for upload: %s", filePath)
+
+		// Upload file with retries (stats are updated inside uploadFileWithRetry)
 		if err := u.uploadFileWithRetry(filePath); err != nil {
 			log.Printf("[ERROR] Failed to upload %s after %d retries: %v", filePath, u.config.MaxRetries, err)
 			u.statsMu.Lock()
 			u.uploadStats.Failed++
+			u.uploadStats.TotalFiles++
 			u.statsMu.Unlock()
 		} else {
+			log.Printf("[DEBUG] Successfully uploaded: %s", filePath)
 			u.statsMu.Lock()
 			u.uploadStats.Successful++
+			u.uploadStats.TotalFiles++
 			u.uploadStats.LastUploadTime = time.Now()
 			u.statsMu.Unlock()
 		}
-
-		u.statsMu.Lock()
-		u.uploadStats.TotalFiles++
-		u.statsMu.Unlock()
 	}
+
+	log.Printf("[DEBUG] Upload worker exiting (channel closed)")
 }
 
 // uploadFileWithRetry uploads a file with retry logic
@@ -147,6 +160,15 @@ func (u *Uploader) uploadFileWithRetry(filePath string) error {
 				u.statsMu.Lock()
 				u.uploadStats.TotalBytes += fileInfo.Size()
 				u.uploadStats.TotalDuration += duration
+
+				// Update min/max upload duration
+				if u.uploadStats.MinUploadDuration == 0 || duration < u.uploadStats.MinUploadDuration {
+					u.uploadStats.MinUploadDuration = duration
+				}
+				if duration > u.uploadStats.MaxUploadDuration {
+					u.uploadStats.MaxUploadDuration = duration
+				}
+
 				u.statsMu.Unlock()
 			}
 			return nil
@@ -306,7 +328,13 @@ func (u *Uploader) uploadParallel(ctx context.Context, client *storage.Client, b
 	if err := u.chunkMgr.Compose(ctx, client, bucket, object, chunkObjects); err != nil {
 		// Cleanup on failure
 		u.cleanupTempChunks(ctx, client, bucket, tempPrefix, numChunks)
+		log.Printf("[ERROR] Compose failed for %s (%d chunks): %v. Chunks may remain in GCS.", object, numChunks, err)
 		return fmt.Errorf("compose error: %w", err)
+	}
+
+	// Log successful compose for debugging
+	if numChunks > 1 {
+		log.Printf("[DEBUG] Successfully composed %d chunks into %s", numChunks, object)
 	}
 
 	// Verify final object size matches expected size

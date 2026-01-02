@@ -71,7 +71,8 @@ func main() {
 		}
 		uploadChan = uploader.GetUploadChannel()
 		uploader.Start()
-		defer uploader.Stop()
+		// Note: uploader.Stop() is called explicitly after test completes and files are uploaded
+		// This ensures all files are processed before stopping the uploader
 		log.Printf("GCS uploader enabled: bucket=%s, prefix=%s, chunk=%dMB", *gcsBucket, *gcsPrefix, *gcsChunkSizeMB)
 	}
 
@@ -339,16 +340,74 @@ func main() {
 	if uploader != nil {
 		// Give uploader time to process all pending files (including final file from Close())
 		log.Printf("Waiting for uploader to finish processing all files...")
-		// Wait longer to ensure all files are uploaded
-		time.Sleep(5 * time.Second)
+
+		// Wait for upload channel to be empty and all uploads to complete
+		// Poll upload stats to see when all files are processed
+		maxWaitTime := 60 * time.Second // Increased timeout for large files/chunks
+		checkInterval := 1 * time.Second
+		deadline := time.Now().Add(maxWaitTime)
+		lastStats := uploader.GetStats()
+		lastStatsTime := time.Now()
+
+		for time.Now().Before(deadline) {
+			time.Sleep(checkInterval)
+			currentStats := uploader.GetStats()
+			now := time.Now()
+
+			// Check if stats changed (new uploads)
+			if currentStats.TotalFiles != lastStats.TotalFiles ||
+				currentStats.Successful != lastStats.Successful ||
+				currentStats.Failed != lastStats.Failed {
+				// Stats changed, reset timer
+				lastStats = currentStats
+				lastStatsTime = now
+				log.Printf("[DEBUG] Upload progress: %d files processed, %d successful, %d failed",
+					currentStats.TotalFiles, currentStats.Successful, currentStats.Failed)
+				continue
+			}
+
+			// Stats haven't changed - check if enough time has passed
+			if now.Sub(lastStatsTime) > 5*time.Second {
+				// No activity for 5 seconds, likely done
+				log.Printf("[DEBUG] No upload activity for 5 seconds, assuming complete")
+				break
+			}
+		}
 
 		uploadStats := uploader.GetStats()
 		log.Printf("  GCS Uploads: %d", uploadStats.Successful)
 		log.Printf("  GCS Upload Errors: %d", uploadStats.Failed)
-		log.Printf("  GCS Upload Bytes: %d", uploadStats.TotalBytes)
+		log.Printf("  GCS Upload Bytes: %d (%.2f GB)", uploadStats.TotalBytes, float64(uploadStats.TotalBytes)/(1024*1024*1024))
+
+		if uploadStats.Successful > 0 {
+			// Upload time metrics
+			log.Printf("  GCS Upload Time:")
+			log.Printf("    Min: %.2fs", uploadStats.MinUploadDuration.Seconds())
+			log.Printf("    Avg: %.2fs", uploadStats.AvgUploadDuration.Seconds())
+			log.Printf("    Max: %.2fs", uploadStats.MaxUploadDuration.Seconds())
+
+			// Upload throughput (MB/s)
+			if uploadStats.TotalDuration > 0 {
+				throughputMBps := float64(uploadStats.TotalBytes) / (1024 * 1024) / uploadStats.TotalDuration.Seconds()
+				log.Printf("  GCS Upload Throughput: %.2f MB/s", throughputMBps)
+			}
+
+			// Per-file average throughput
+			if uploadStats.AvgUploadDuration > 0 && uploadStats.TotalBytes > 0 {
+				avgFileSize := float64(uploadStats.TotalBytes) / float64(uploadStats.Successful)
+				avgThroughputMBps := avgFileSize / (1024 * 1024) / uploadStats.AvgUploadDuration.Seconds()
+				log.Printf("  GCS Avg File Throughput: %.2f MB/s", avgThroughputMBps)
+			}
+		}
+
 		if uploadStats.TotalFiles > 0 {
 			log.Printf("  GCS Total Files Processed: %d", uploadStats.TotalFiles)
 			log.Printf("  GCS Last Upload Time: %v", uploadStats.LastUploadTime)
 		}
+
+		// Stop uploader after all files are processed
+		log.Printf("Stopping uploader...")
+		uploader.Stop()
+		log.Printf("Uploader stopped")
 	}
 }

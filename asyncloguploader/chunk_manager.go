@@ -82,6 +82,8 @@ func (cm *ChunkManager) multiLevelCompose(ctx context.Context, client *storage.C
 		}
 
 		group := chunkObjects[i:end]
+		// Generate intermediate object name with full path to avoid conflicts
+		// Use the same prefix/directory structure as the final object
 		intermediateObj := fmt.Sprintf("%s.intermediate.%d", object, i/cm.maxChunksPerCompose)
 
 		if err := cm.singleCompose(ctx, client, bucket, intermediateObj, group); err != nil {
