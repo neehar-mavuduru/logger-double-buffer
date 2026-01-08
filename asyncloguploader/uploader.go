@@ -28,6 +28,7 @@ type Uploader struct {
 	uploadStats Stats
 	statsMu     sync.RWMutex
 	chunkMgr    *ChunkManager
+	stopOnce    sync.Once // Ensures Stop() is idempotent
 }
 
 // Stats tracks upload statistics
@@ -79,18 +80,21 @@ func (u *Uploader) Start() {
 }
 
 // Stop stops the uploader service gracefully
+// Safe to call multiple times (idempotent)
 func (u *Uploader) Stop() {
-	// Close channel first to stop accepting new files
-	close(u.uploadChan)
+	u.stopOnce.Do(func() {
+		// Close channel first to stop accepting new files
+		close(u.uploadChan)
 
-	// Wait for upload worker to finish processing all files in channel
-	u.wg.Wait()
+		// Wait for upload worker to finish processing all files in channel
+		u.wg.Wait()
 
-	// Now cancel context (this will cancel any ongoing uploads)
-	u.cancel()
+		// Now cancel context (this will cancel any ongoing uploads)
+		u.cancel()
 
-	// Close client
-	u.client.Close()
+		// Close client
+		u.client.Close()
+	})
 }
 
 // GetUploadChannel returns the channel to send file paths for upload

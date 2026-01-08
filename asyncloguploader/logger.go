@@ -40,8 +40,8 @@ type Logger struct {
 	// FileWriter for writing logs with Direct I/O and rotation support
 	fileWriter FileWriter
 
-	// Channel for flush requests (contains ready shards)
-	flushChan chan []*Shard
+	// Channel for flush requests (individual shards sent on swap)
+	flushChan chan *Shard
 
 	// Ticker for periodic flushing
 	ticker *time.Ticker
@@ -75,8 +75,12 @@ func NewLogger(config Config) (*Logger, error) {
 		return nil, fmt.Errorf("failed to create file writer: %w", err)
 	}
 
+	// Create flush channel first
+	flushChan := make(chan *Shard, 32) // Buffer for individual shard flush requests
+
 	// Create shard collection (each shard has its own double buffer)
-	shardCollection, err := NewShardCollection(config.BufferSize, config.NumShards)
+	// Pass flush channel so shards can enqueue themselves on swap
+	shardCollection, err := NewShardCollection(config.BufferSize, config.NumShards, flushChan)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create shard collection: %w", err)
 	}
@@ -85,7 +89,7 @@ func NewLogger(config Config) (*Logger, error) {
 	l := &Logger{
 		shardCollection: shardCollection,
 		fileWriter:      fileWriter,
-		flushChan:       make(chan []*Shard, 2), // Buffer for flush requests
+		flushChan:       flushChan,
 		ticker:          time.NewTicker(config.FlushInterval),
 		done:            make(chan struct{}),
 		semaphore:       make(chan struct{}, 1),
@@ -113,19 +117,8 @@ func (l *Logger) LogBytes(data []byte) {
 	n, needsFlush, shardID := l.shardCollection.Write(data)
 
 	if n > 0 {
-		// Success! Check if threshold reached and trigger flush if needed
-		if needsFlush && l.shardCollection.ThresholdReached() {
-			// Collect ready shards and send to flush channel
-			readyShards := l.shardCollection.GetReadyShards()
-			if len(readyShards) > 0 {
-				select {
-				case l.flushChan <- readyShards:
-					// Successfully queued for flush
-				default:
-					// Channel full, skip this flush (will be picked up by periodic flush)
-				}
-			}
-		}
+		// Success! Shard is already enqueued to flush channel if needsFlush=true
+		// Flush worker will accumulate and flush when threshold reached
 		l.stats.BytesWritten.Add(int64(n))
 		return
 	}
@@ -150,16 +143,7 @@ func (l *Logger) LogBytes(data []byte) {
 		// Re-check 1: Swap might have happened by another thread
 		n, needsFlush = shard.Write(data)
 		if n > 0 {
-			// Success after re-check!
-			if needsFlush && l.shardCollection.ThresholdReached() {
-				readyShards := l.shardCollection.GetReadyShards()
-				if len(readyShards) > 0 {
-					select {
-					case l.flushChan <- readyShards:
-					default:
-					}
-				}
-			}
+			// Success after re-check! Shard is already enqueued if needsFlush=true
 			l.stats.BytesWritten.Add(int64(n))
 			return
 		}
@@ -180,16 +164,7 @@ func (l *Logger) LogBytes(data []byte) {
 			// (very rare, but possible under extreme load)
 			l.stats.DroppedLogs.Add(1)
 		} else {
-			// Success after swap!
-			if l.shardCollection.ThresholdReached() {
-				readyShards := l.shardCollection.GetReadyShards()
-				if len(readyShards) > 0 {
-					select {
-					case l.flushChan <- readyShards:
-					default:
-					}
-				}
-			}
+			// Success after swap! Shard is already enqueued if needsFlush=true
 			l.stats.BytesWritten.Add(int64(n))
 		}
 
@@ -216,14 +191,38 @@ func stringToBytes(s string) []byte {
 }
 
 // flushWorker processes flush requests
+// Accumulates shards in a list and flushes when threshold is reached
 func (l *Logger) flushWorker() {
+	flushList := make([]*Shard, 0, l.shardCollection.NumShards())
+
 	for {
 		select {
-		case readyShards := <-l.flushChan:
-			l.flushShards(readyShards)
+		case shard := <-l.flushChan:
+			// Deduplicate: Check if shard already in list
+			alreadyInList := false
+			for _, s := range flushList {
+				if s.ID() == shard.ID() {
+					alreadyInList = true
+					break
+				}
+			}
+
+			if !alreadyInList {
+				flushList = append(flushList, shard)
+			}
+
+			// Check if threshold reached
+			if len(flushList) >= int(l.shardCollection.threshold) {
+				l.flushShardsEnhanced(flushList)
+				flushList = flushList[:0] // Clear list
+			}
+
 		case <-l.done:
-			// Flush any remaining data in the channel
+			// Flush any remaining data in the channel and list
 			l.drainFlushChannel()
+			if len(flushList) > 0 {
+				l.flushShardsEnhanced(flushList)
+			}
 			return
 		}
 	}
@@ -234,15 +233,18 @@ func (l *Logger) tickerWorker() {
 	for {
 		select {
 		case <-l.ticker.C:
-			// Check if any shards have data and threshold reached
+			// Periodic flush: collect all ready shards and flush if threshold reached
 			if l.shardCollection.HasData() && l.shardCollection.ThresholdReached() {
 				readyShards := l.shardCollection.GetReadyShards()
 				if len(readyShards) > 0 {
-					select {
-					case l.flushChan <- readyShards:
-						// Successfully queued for flush
-					default:
-						// Channel full, skip this flush
+					// Send each shard individually (they may already be in flush worker's list)
+					for _, shard := range readyShards {
+						select {
+						case l.flushChan <- shard:
+							// Successfully queued
+						default:
+							// Channel full, skip (will retry next tick)
+						}
 					}
 				}
 			}
@@ -252,8 +254,9 @@ func (l *Logger) tickerWorker() {
 	}
 }
 
-// flushShards writes all data from ready shards to disk using batch flush
-func (l *Logger) flushShards(readyShards []*Shard) {
+// flushShardsEnhanced writes all data from ready shards to disk using batch flush
+// Handles the case where both buffers of a shard are full
+func (l *Logger) flushShardsEnhanced(readyShards []*Shard) {
 	// Track flush operation timing
 	flushStart := time.Now()
 
@@ -272,54 +275,76 @@ func (l *Logger) flushShards(readyShards []*Shard) {
 	defer func() { <-l.semaphore }()
 
 	// Collect all shard buffers for batched write (single Pwritev syscall)
-	shardBuffers := make([][]byte, 0, len(readyShards))
+	shardBuffers := make([][]byte, 0, len(readyShards)*2) // *2 in case both buffers full
+	shardsToReset := make([]*Shard, 0, len(readyShards))
 
 	for _, shard := range readyShards {
-		// Quick check: skip shards with no data
-		if !shard.HasData() {
-			continue
+		// Track if we need to reset this shard
+		needsReset := false
+
+		// Check inactive buffer first (normal case)
+		if shard.HasData() {
+			data, allWritesCompleted := shard.GetData(l.config.FlushTimeout)
+			if data != nil {
+				shardOffset := shard.GetInactiveOffset()
+				if shardOffset > headerOffset {
+					capacity := shard.Capacity()
+					validDataBytes := shardOffset - headerOffset
+					if validDataBytes < 0 {
+						validDataBytes = 0
+					}
+
+					if !allWritesCompleted {
+						fmt.Printf("[WARNING] Shard %d: Not all writes completed before flush timeout, flushing partial data\n", shard.ID())
+					}
+
+					if len(data) >= int(headerOffset) {
+						// Write header directly into the first 8 bytes
+						binary.LittleEndian.PutUint32(data[0:4], uint32(capacity))
+						binary.LittleEndian.PutUint32(data[4:8], uint32(validDataBytes))
+						shardBuffers = append(shardBuffers, data)
+						needsReset = true
+					}
+				}
+			}
 		}
 
-		// Get buffer data - this waits for all writes to complete
-		data, allWritesCompleted := shard.GetData(l.config.FlushTimeout)
-		if data == nil {
-			// Failed to get data, skip this shard
-			continue
+		// CRITICAL: Check if active buffer also has data (both buffers full)
+		activeOffset := shard.Offset()
+		if activeOffset > headerOffset {
+			// Active buffer also has data - need to flush it too
+			// Force swap to make active buffer inactive
+			shard.trySwap()
+
+			// Now get the data (previously active, now inactive)
+			data, allWritesCompleted := shard.GetData(l.config.FlushTimeout)
+			if data != nil {
+				shardOffset := shard.GetInactiveOffset()
+				if shardOffset > headerOffset {
+					capacity := shard.Capacity()
+					validDataBytes := shardOffset - headerOffset
+					if validDataBytes < 0 {
+						validDataBytes = 0
+					}
+
+					if !allWritesCompleted {
+						fmt.Printf("[WARNING] Shard %d: Not all writes completed before flush timeout, flushing partial data\n", shard.ID())
+					}
+
+					if len(data) >= int(headerOffset) {
+						// Write header directly into the first 8 bytes
+						binary.LittleEndian.PutUint32(data[0:4], uint32(capacity))
+						binary.LittleEndian.PutUint32(data[4:8], uint32(validDataBytes))
+						shardBuffers = append(shardBuffers, data)
+						needsReset = true
+					}
+				}
+			}
 		}
 
-		// Get offset of inactive buffer (the one being flushed)
-		shardOffset := shard.GetInactiveOffset()
-		if shardOffset <= headerOffset {
-			// No data written
-			continue
+		if needsReset {
+			shardsToReset = append(shardsToReset, shard)
 		}
-
-		capacity := shard.Capacity()
-		// validDataBytes is the actual data size (excluding the 8-byte header reservation)
-		validDataBytes := shardOffset - headerOffset
-
-		// Defensive check: ensure validDataBytes is non-negative
-		if validDataBytes < 0 {
-			validDataBytes = 0
-		}
-
-		// Warn if writes didn't complete before timeout (may indicate performance issue)
-		if !allWritesCompleted {
-			fmt.Printf("[WARNING] Shard %d: Not all writes completed before flush timeout, flushing partial data\n", shard.ID())
-		}
-
-		// Ensure we have enough data for header
-		if len(data) < int(headerOffset) {
-			fmt.Printf("[ERROR] Shard %d: Buffer too small for header (got %d bytes, need %d)\n", shard.ID(), len(data), headerOffset)
-			continue
-		}
-
-		// Write header directly into the first 8 bytes of the buffer (in-place, zero-copy!)
-		binary.LittleEndian.PutUint32(data[0:4], uint32(capacity))
-		binary.LittleEndian.PutUint32(data[4:8], uint32(validDataBytes))
-
-		// Use buffer directly - no copying needed!
-		shardBuffers = append(shardBuffers, data)
 	}
 
 	// Single batched write for all shards - track timing
@@ -378,9 +403,9 @@ func (l *Logger) flushShards(readyShards []*Shard) {
 		}
 	}
 
-	// Reset all ready shards after flush attempt
-	for _, shard := range readyShards {
-		shard.Reset()
+	// Reset all shards that were flushed (enhanced Reset handles both buffers)
+	for _, shard := range shardsToReset {
+		shard.ResetEnhanced()
 	}
 
 	// Reset ready shards count
@@ -403,13 +428,28 @@ func (l *Logger) flushShards(readyShards []*Shard) {
 	}
 }
 
-// drainFlushChannel drains any remaining flush requests
+// drainFlushChannel drains any remaining flush requests from the channel
 func (l *Logger) drainFlushChannel() {
+	flushList := make([]*Shard, 0, l.shardCollection.NumShards())
+
 	for {
 		select {
-		case readyShards := <-l.flushChan:
-			l.flushShards(readyShards)
+		case shard := <-l.flushChan:
+			// Deduplicate
+			alreadyInList := false
+			for _, s := range flushList {
+				if s.ID() == shard.ID() {
+					alreadyInList = true
+					break
+				}
+			}
+			if !alreadyInList {
+				flushList = append(flushList, shard)
+			}
 		default:
+			if len(flushList) > 0 {
+				l.flushShardsEnhanced(flushList)
+			}
 			return
 		}
 	}
@@ -563,9 +603,9 @@ func (l *Logger) Close() error {
 		}
 	}
 
-	// Flush remaining data (flushShards will acquire semaphore itself)
+	// Flush remaining data (flushShardsEnhanced will acquire semaphore itself)
 	if len(shardsWithData) > 0 {
-		l.flushShards(shardsWithData)
+		l.flushShardsEnhanced(shardsWithData)
 	}
 
 	// Close shard collection

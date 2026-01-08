@@ -10,14 +10,16 @@ import (
 type ShardCollection struct {
 	shards      []*Shard
 	numShards   int
-	readyShards atomic.Int32 // Count of shards ready for flush
-	threshold   int32        // Threshold count (25% of numShards)
+	readyShards atomic.Int32  // Count of shards ready for flush
+	threshold   int32         // Threshold count (25% of numShards)
+	flushChan   chan<- *Shard // Channel to send shards for flush (set by Logger)
 }
 
 // NewShardCollection creates a new collection of shards with individual double buffers
 // totalCapacity is divided evenly among numShards
 // Threshold is fixed at 25% of numShards
-func NewShardCollection(totalCapacity, numShards int) (*ShardCollection, error) {
+// flushChan is optional - if provided, shards will be sent to it on swap
+func NewShardCollection(totalCapacity, numShards int, flushChan chan<- *Shard) (*ShardCollection, error) {
 	if numShards <= 0 {
 		numShards = 8 // Default
 	}
@@ -55,6 +57,7 @@ func NewShardCollection(totalCapacity, numShards int) (*ShardCollection, error) 
 		shards:    shards,
 		numShards: numShards,
 		threshold: threshold,
+		flushChan: flushChan,
 	}, nil
 }
 
@@ -71,12 +74,25 @@ func (sc *ShardCollection) Write(p []byte) (n int, needsFlush bool, shardID int)
 
 	n, needsFlush = shard.Write(p)
 
-	// If shard is ready for flush, update ready count
+	// If shard is ready for flush, send to flush channel and update ready count
 	if needsFlush {
+		sc.EnqueueShardForFlush(shard)
 		sc.MarkShardReady()
 	}
 
 	return n, needsFlush, shardIdx
+}
+
+// EnqueueShardForFlush sends a shard to the flush channel (non-blocking)
+func (sc *ShardCollection) EnqueueShardForFlush(shard *Shard) {
+	if sc.flushChan != nil {
+		select {
+		case sc.flushChan <- shard:
+			// Successfully queued for flush
+		default:
+			// Channel full, skip (will be picked up by periodic flush)
+		}
+	}
 }
 
 // MarkShardReady increments the ready shards count

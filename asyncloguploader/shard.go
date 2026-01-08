@@ -86,6 +86,27 @@ func NewShard(capacity int, id uint32) (*Shard, error) {
 	s.offsetA.Store(headerOffset)
 	s.offsetB.Store(headerOffset)
 
+	// Set finalizer on Shard struct (not on individual buffers)
+	// This ensures buffers are only unmapped when Shard is garbage collected
+	// and not while they're still referenced by the Shard
+	runtime.SetFinalizer(s, func(shard *Shard) {
+		if shard != nil {
+			// Acquire mutex to ensure no concurrent access during cleanup
+			shard.mu.Lock()
+			defer shard.mu.Unlock()
+
+			// Unmap buffers if they still exist
+			if len(shard.bufferA) > 0 {
+				unix.Munmap(shard.bufferA)
+				shard.bufferA = nil
+			}
+			if len(shard.bufferB) > 0 {
+				unix.Munmap(shard.bufferB)
+				shard.bufferB = nil
+			}
+		}
+	})
+
 	return s, nil
 }
 
@@ -112,12 +133,8 @@ func allocMmapBuffer(size int) ([]byte, func(), error) {
 		// Don't unmap during normal operation - reuse buffers
 	}
 
-	// Set finalizer for cleanup on GC
-	runtime.SetFinalizer(&data, func(d *[]byte) {
-		if d != nil && len(*d) > 0 {
-			unix.Munmap(*d)
-		}
-	})
+	// NOTE: Finalizer is NOT set here - it's set on the Shard struct instead
+	// This prevents premature unmapping while the buffer is still in use
 
 	return data, cleanup, nil
 }
@@ -180,8 +197,17 @@ func (s *Shard) Write(p []byte) (n int, needsFlush bool) {
 		return s.Write(p)
 	}
 
-	// Get active buffer slice
-	activeBuf := *activeBufPtr
+	// CRITICAL: Re-check activeBuffer after CAS to ensure it hasn't changed
+	// This prevents race condition where buffer is swapped during CAS operation
+	currentActiveBufPtr := s.activeBuffer.Load()
+	if currentActiveBufPtr != activeBufPtr {
+		// Buffer was swapped during CAS - rollback offset and retry write
+		offset.Store(currentOffset)
+		return s.Write(p)
+	}
+
+	// Now safe to dereference - activeBuffer hasn't changed
+	activeBuf := *currentActiveBufPtr
 
 	// Bounds check: ensure we have enough space in buffer
 	if int(newOffset) > len(activeBuf) {
@@ -192,8 +218,9 @@ func (s *Shard) Write(p []byte) (n int, needsFlush bool) {
 	}
 
 	// Increment inflight counter for the active buffer
+	// Use currentActiveBufPtr (re-checked) instead of activeBufPtr
 	var inflight *atomic.Int64
-	if activeBufPtr == &s.bufferA {
+	if currentActiveBufPtr == &s.bufferA {
 		inflight = &s.inflightA
 	} else {
 		inflight = &s.inflightB
@@ -213,6 +240,10 @@ func (s *Shard) Write(p []byte) (n int, needsFlush bool) {
 
 	// Check if buffer is now full or nearly full (within 10%)
 	if newOffset >= s.capacity*9/10 {
+		// CRITICAL: Force swap immediately so inactive buffer has the data
+		// This ensures flush can read the data from inactive buffer
+		// trySwap() is idempotent (CAS-protected), so calling it multiple times is safe
+		s.trySwap()
 		s.readyForFlush.Store(true)
 		return totalSize, true
 	}
@@ -307,30 +338,46 @@ func (s *Shard) GetInactiveOffset() int32 {
 	return s.offsetA.Load()
 }
 
-// Reset clears the inactive buffer after flush
+// Reset clears the inactive buffer after flush (legacy method for compatibility)
 func (s *Shard) Reset() {
+	s.ResetEnhanced()
+}
+
+// ResetEnhanced clears buffers after flush, handling the case where both buffers are full
+// Ensures at least one buffer is empty and active pointer is valid for writes to continue
+func (s *Shard) ResetEnhanced() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Get inactive buffer and reset it
 	activeBufPtr := s.activeBuffer.Load()
-	var inactiveOffset *atomic.Int32
-	var inflight *atomic.Int64
+	activeOffset := s.Offset()
+	inactiveOffset := s.GetInactiveOffset()
 
-	if activeBufPtr == nil || activeBufPtr == &s.bufferA {
-		// Active is A or nil, so inactive is B
-		inactiveOffset = &s.offsetB
-		inflight = &s.inflightB
-	} else {
-		// Active is B, so inactive is A
-		inactiveOffset = &s.offsetA
-		inflight = &s.inflightA
-	}
+	activeHasData := activeOffset > headerOffset
+	inactiveHasData := inactiveOffset > headerOffset
 
-	if inactiveOffset != nil {
-		inactiveOffset.Store(headerOffset)
-		inflight.Store(0)
+	if activeHasData && inactiveHasData {
+		// BOTH buffers are full - clear both
+		s.offsetA.Store(headerOffset)
+		s.offsetB.Store(headerOffset)
+		s.inflightA.Store(0)
+		s.inflightB.Store(0)
+		// Active pointer stays as-is (both buffers now empty, either can accept writes)
+	} else if inactiveHasData {
+		// Only inactive buffer has data (normal case)
+		if activeBufPtr == nil || activeBufPtr == &s.bufferA {
+			// Active is A, inactive is B
+			s.offsetB.Store(headerOffset)
+			s.inflightB.Store(0)
+		} else {
+			// Active is B, inactive is A
+			s.offsetA.Store(headerOffset)
+			s.inflightA.Store(0)
+		}
 	}
+	// If only active has data, it means swap happened during flush
+	// This will be handled by the next flush cycle
+
 	s.readyForFlush.Store(false)
 }
 
@@ -375,6 +422,9 @@ func (s *Shard) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Clear finalizer before manual cleanup to prevent double-unmap
+	runtime.SetFinalizer(s, nil)
+
 	if s.cleanupA != nil {
 		s.cleanupA()
 	}
@@ -385,8 +435,10 @@ func (s *Shard) Close() {
 	// Unmap buffers
 	if len(s.bufferA) > 0 {
 		unix.Munmap(s.bufferA)
+		s.bufferA = nil
 	}
 	if len(s.bufferB) > 0 {
 		unix.Munmap(s.bufferB)
+		s.bufferB = nil
 	}
 }
