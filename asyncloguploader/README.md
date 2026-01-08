@@ -2,6 +2,31 @@
 
 A high-performance, asynchronous logging system with integrated cloud storage upload capabilities. Uses a sharded double-buffer architecture optimized for Direct I/O operations, supporting multiple events with separate log files.
 
+## Installation
+
+### As a Standalone Module
+
+The `asyncloguploader` package is a standalone Go module that can be used independently:
+
+```bash
+go get github.com/neehar-mavuduru/logger-double-buffer/asyncloguploader
+```
+
+### Module Structure
+
+This package has its own `go.mod` file and manages its dependencies independently:
+- **Module Path**: `github.com/neehar-mavuduru/logger-double-buffer/asyncloguploader`
+- **Go Version**: 1.21+
+- **Dependencies**: Minimal external dependencies (GCS client, sys/unix)
+
+### Repository
+
+**GitHub**: [https://github.com/neehar-mavuduru/logger-double-buffer](https://github.com/neehar-mavuduru/logger-double-buffer)
+
+**Package**: `github.com/neehar-mavuduru/logger-double-buffer/asyncloguploader`
+
+**Module**: Standalone module with its own `go.mod`
+
 ## Features
 
 - **Sharded Double Buffer CAS**: Lock-free writes using Compare-and-Swap operations
@@ -39,10 +64,36 @@ The module consists of several key components:
 - **Shard Threshold**: Fixed at 25% (e.g., 2 out of 8 shards)
 - **Swap Coordination**: Semaphore-based (30 permits) to coordinate multiple writers
 
+## Quick Start
+
+```go
+package main
+
+import (
+    "log"
+    "github.com/neehar-mavuduru/logger-double-buffer/asyncloguploader"
+)
+
+func main() {
+    // Create configuration
+    config := asyncloguploader.DefaultConfig("/var/logs/app.log")
+    
+    // Create logger
+    logger, err := asyncloguploader.NewLogger(config)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer logger.Close()
+    
+    // Write logs
+    logger.Log("Hello, World!")
+}
+```
+
 ## Configuration
 
 ```go
-import "github.com/neeharmavuduru/logger-double-buffer/asyncloguploader"
+import "github.com/neehar-mavuduru/logger-double-buffer/asyncloguploader"
 
 // Create base configuration
 config := asyncloguploader.DefaultConfig("/var/logs/app.log")
@@ -99,7 +150,7 @@ package main
 import (
     "log"
     "time"
-    "github.com/neeharmavuduru/logger-double-buffer/asyncloguploader"
+    "github.com/neehar-mavuduru/logger-double-buffer/asyncloguploader"
 )
 
 func main() {
@@ -234,7 +285,7 @@ import (
     "fmt"
     "log"
     "time"
-    "github.com/neeharmavuduru/logger-double-buffer/asyncloguploader"
+    "github.com/neehar-mavuduru/logger-double-buffer/asyncloguploader"
 )
 
 func main() {
@@ -457,4 +508,8 @@ asyncloguploader/
 
 ## License
 
-[Your License Here]
+MIT License
+
+Copyright (c) 2024
+
+See the [LICENSE](../../LICENSE) file in the repository root for details.

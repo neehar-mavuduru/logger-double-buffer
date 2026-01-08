@@ -1,4 +1,4 @@
-module github.com/neeharmavuduru/logger-double-buffer/asyncloguploader
+module github.com/neehar-mavuduru/logger-double-buffer/asyncloguploader
 
 go 1.24.0
 
